@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,7 +26,7 @@
 #define MAX_REGULATOR 5
 #define MAX_POWER_CONFIG 12
 
-#define MAX_PER_FRAME_ARRAY 33
+#define MAX_PER_FRAME_ARRAY 32
 #define BATCH_SIZE_MAX      16
 
 #define CAM_SENSOR_NAME    "cam-sensor"
@@ -35,7 +35,6 @@
 #define CAM_FLASH_NAME     "cam-flash"
 #define CAM_EEPROM_NAME    "cam-eeprom"
 #define CAM_OIS_NAME       "cam-ois"
-#define CAM_SL_EEPROM_NAME "cam-sl-eeprom"
 
 #define MAX_SYSTEM_PIPELINE_DELAY 2
 
@@ -133,7 +132,6 @@ enum sensor_sub_module {
 	SUB_MODULE_CSID,
 	SUB_MODULE_CSIPHY,
 	SUB_MODULE_OIS,
-	SUB_MODULE_IR_LED,
 	SUB_MODULE_EXT,
 	SUB_MODULE_MAX,
 };
@@ -167,7 +165,8 @@ enum cam_sensor_packet_opcodes {
 enum cam_actuator_packet_opcodes {
 	CAM_ACTUATOR_PACKET_OPCODE_INIT,
 	CAM_ACTUATOR_PACKET_AUTO_MOVE_LENS,
-	CAM_ACTUATOR_PACKET_MANUAL_MOVE_LENS
+	CAM_ACTUATOR_PACKET_MANUAL_MOVE_LENS,
+	CAM_ACTUATOR_PACKET_REG_READ
 };
 
 enum cam_eeprom_packet_opcodes {
@@ -176,7 +175,12 @@ enum cam_eeprom_packet_opcodes {
 
 enum cam_ois_packet_opcodes {
 	CAM_OIS_PACKET_OPCODE_INIT,
-	CAM_OIS_PACKET_OPCODE_OIS_CONTROL
+	CAM_OIS_PACKET_OPCODE_OIS_CONTROL,
+	CAM_OIS_PACKET_OPCODE_SHIFT_READER_START,
+	CAM_OIS_PACKET_OPCODE_SHIFT_READER_STOP,
+	CAM_OIS_PACKET_OPCODE_SHIFT_GET,
+	CAM_OIS_PACKET_OPCODE_READ,
+	CAM_OIS_PACKET_OPCODE_CALIBRATION
 };
 
 enum msm_bus_perf_setting {
@@ -271,6 +275,7 @@ struct cam_sensor_i2c_reg_setting {
 	enum camera_sensor_i2c_type addr_type;
 	enum camera_sensor_i2c_type data_type;
 	unsigned short delay;
+	unsigned short slave_addr;
 };
 
 struct i2c_settings_list {

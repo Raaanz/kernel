@@ -294,9 +294,9 @@ static void fw_free_buf(struct firmware_buf *buf)
 static char fw_path_para[256];
 static const char * const fw_path[] = {
 	fw_path_para,
-	("/lib/firmware/updates/" UTS_RELEASE),
+	"/lib/firmware/updates/" UTS_RELEASE,
 	"/lib/firmware/updates",
-	("/lib/firmware/" UTS_RELEASE),
+	"/lib/firmware/" UTS_RELEASE,
 	"/lib/firmware"
 };
 
@@ -1022,7 +1022,7 @@ fw_load_from_user_helper(struct firmware *firmware, const char *name,
 /* No abort during direct loading */
 #define is_fw_load_aborted(buf) false
 
-#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_FW_CACHE
 static inline void kill_requests_without_uevent(void) { }
 #endif
 
@@ -1428,6 +1428,7 @@ static int cache_firmware(const char *fw_name)
 	return ret;
 }
 
+#ifdef CONFIG_FW_CACHE
 static struct firmware_buf *fw_lookup_buf(const char *fw_name)
 {
 	struct firmware_buf *tmp;
@@ -1439,7 +1440,7 @@ static struct firmware_buf *fw_lookup_buf(const char *fw_name)
 
 	return tmp;
 }
-
+#endif
 /**
  * uncache_firmware - remove one cached firmware image
  * @fw_name: the firmware image name

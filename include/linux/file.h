@@ -19,6 +19,7 @@ struct dentry;
 struct path;
 extern struct file *alloc_file(struct path *, fmode_t mode,
 	const struct file_operations *fop);
+extern struct file *get_empty_filp(void);
 
 static inline void fput_light(struct file *file, int fput_needed)
 {
@@ -84,6 +85,7 @@ extern void put_unused_fd(unsigned int fd);
 extern void fd_install(unsigned int fd, struct file *file);
 
 extern void flush_delayed_fput(void);
+extern void flush_delayed_fput_wait(void);
 extern void __fput_sync(struct file *);
 
 #endif /* __LINUX_FILE_H */

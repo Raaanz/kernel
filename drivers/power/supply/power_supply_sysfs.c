@@ -81,7 +81,7 @@ static ssize_t power_supply_show_property(struct device *dev,
 		"Non compliant",
 	};
 	static const char * const typec_pr_text[] = {
-		"none", "dual power role", "sink", "source"
+		"none", "dual power role", "sink", "source", "source_1_5"
 	};
 	ssize_t ret = 0;
 	struct power_supply *psy = dev_get_drvdata(dev);
@@ -146,18 +146,6 @@ static ssize_t power_supply_show_property(struct device *dev,
 	if (off == POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT)
 		return scnprintf(buf, PAGE_SIZE, "%lld\n",
 				value.int64val);
-	else if (off == POWER_SUPPLY_PROP_WIRELESS_VERSION)
-		return scnprintf(buf, PAGE_SIZE, "0x%x\n",
-				value.intval);
-	else if (off == POWER_SUPPLY_PROP_WIRELESS_WAKELOCK)
-		return scnprintf(buf, PAGE_SIZE, "%d\n",
-				value.intval);
-	else if (off == POWER_SUPPLY_PROP_SIGNAL_STRENGTH)
-		return scnprintf(buf, PAGE_SIZE, "%d\n",
-				value.intval);
-	else if (off == POWER_SUPPLY_PROP_TYPE_RECHECK)
-		return scnprintf(buf, PAGE_SIZE, "0x%x\n",
-				value.intval);
 	else
 		return scnprintf(buf, PAGE_SIZE, "%d\n",
 				value.intval);
@@ -278,7 +266,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(temp_hot),
 	POWER_SUPPLY_ATTR(system_temp_level),
 	POWER_SUPPLY_ATTR(resistance),
-	POWER_SUPPLY_ATTR(esr),
 	POWER_SUPPLY_ATTR(resistance_capacitive),
 	POWER_SUPPLY_ATTR(resistance_id),
 	POWER_SUPPLY_ATTR(resistance_now),
@@ -299,7 +286,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(current_qnovo),
 	POWER_SUPPLY_ATTR(voltage_qnovo),
 	POWER_SUPPLY_ATTR(rerun_aicl),
-	POWER_SUPPLY_ATTR(charger_type),
 	POWER_SUPPLY_ATTR(cycle_count_id),
 	POWER_SUPPLY_ATTR(safety_timer_expired),
 	POWER_SUPPLY_ATTR(restricted_charging),
@@ -327,25 +313,15 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(ctm_current_max),
 	POWER_SUPPLY_ATTR(hw_current_max),
 	POWER_SUPPLY_ATTR(real_type),
-	POWER_SUPPLY_ATTR(hvdcp3_type),
-	POWER_SUPPLY_ATTR(quick_charge_type),
-	POWER_SUPPLY_ATTR(dc_adapter),
 	POWER_SUPPLY_ATTR(pr_swap),
 	POWER_SUPPLY_ATTR(cc_step),
 	POWER_SUPPLY_ATTR(cc_step_sel),
 	POWER_SUPPLY_ATTR(sw_jeita_enabled),
-	POWER_SUPPLY_ATTR(dynamic_fv_enabled),
+	POWER_SUPPLY_ATTR(taper_control_enabled),
 	POWER_SUPPLY_ATTR(pd_voltage_max),
 	POWER_SUPPLY_ATTR(pd_voltage_min),
 	POWER_SUPPLY_ATTR(sdp_current_max),
-	POWER_SUPPLY_ATTR(dc_thermal_levels),
 	POWER_SUPPLY_ATTR(connector_type),
-	POWER_SUPPLY_ATTR(rerun_apsd),
-	POWER_SUPPLY_ATTR(type_recheck),
-	POWER_SUPPLY_ATTR(wireless_version),
-	POWER_SUPPLY_ATTR(signal_strength),
-	POWER_SUPPLY_ATTR(wireless_wakelock),
-	POWER_SUPPLY_ATTR(tx_adapter),
 	POWER_SUPPLY_ATTR(parallel_batfet_mode),
 	POWER_SUPPLY_ATTR(parallel_fcc_max),
 	POWER_SUPPLY_ATTR(min_icl),
@@ -361,14 +337,11 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(battery_info),
 	POWER_SUPPLY_ATTR(battery_info_id),
 	POWER_SUPPLY_ATTR(enable_jeita_detection),
-	POWER_SUPPLY_ATTR(esr_actual),
-	POWER_SUPPLY_ATTR(esr_nominal),
-	POWER_SUPPLY_ATTR(soh),
-	POWER_SUPPLY_ATTR(qc_opti_disable),
-	POWER_SUPPLY_ATTR(fcc_stepper_enable),
-	POWER_SUPPLY_ATTR(cc_soc),
-	POWER_SUPPLY_ATTR(qg_vbms_mode),
-	POWER_SUPPLY_ATTR(real_capacity),
+	POWER_SUPPLY_ATTR(otg_fastroleswap),
+	POWER_SUPPLY_ATTR(charge_disable),
+	POWER_SUPPLY_ATTR(in_explicit_contract),
+	POWER_SUPPLY_ATTR(charger_status_fast),
+	POWER_SUPPLY_ATTR(batt_ce_ctrl),
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	/* Properties of type `const char *' */

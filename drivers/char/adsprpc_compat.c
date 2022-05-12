@@ -132,7 +132,7 @@ struct compat_fastrpc_ctrl_latency {
 	compat_uint_t level;	/* level of control */
 };
 
-#define FASTRPC_CONTROL_SMMU (2)
+#define FASTRPC_CONTROL_SMMU		(2)
 struct compat_fastrpc_ctrl_smmu {
 	compat_uint_t sharedcb;
 };

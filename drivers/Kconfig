@@ -138,8 +138,6 @@ source "drivers/hv/Kconfig"
 
 source "drivers/xen/Kconfig"
 
-source "drivers/vservices/Kconfig"
-
 source "drivers/staging/Kconfig"
 
 source "drivers/platform/Kconfig"
@@ -211,9 +209,5 @@ source "drivers/fpga/Kconfig"
 source "drivers/sensors/Kconfig"
 
 source "drivers/tee/Kconfig"
-
-source "drivers/gps/Kconfig"
-
-source "drivers/halls/Kconfig"
 
 endmenu

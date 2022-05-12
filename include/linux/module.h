@@ -211,7 +211,7 @@ extern void cleanup_module(void);
 #ifdef MODULE
 /* Creates an alias so file2alias.c can find device table. */
 #define MODULE_DEVICE_TABLE(type, name)					\
-extern const typeof(name) __mod_##type##__##name##_device_table		\
+extern typeof(name) __mod_##type##__##name##_device_table		\
   __attribute__ ((unused, alias(__stringify(name))))
 #else  /* !MODULE */
 #define MODULE_DEVICE_TABLE(type, name)
@@ -669,23 +669,6 @@ static inline bool is_module_percpu_address(unsigned long addr)
 }
 
 static inline bool is_module_text_address(unsigned long addr)
-{
-	return false;
-}
-
-static inline bool within_module_core(unsigned long addr,
-				      const struct module *mod)
-{
-	return false;
-}
-
-static inline bool within_module_init(unsigned long addr,
-				      const struct module *mod)
-{
-	return false;
-}
-
-static inline bool within_module(unsigned long addr, const struct module *mod)
 {
 	return false;
 }

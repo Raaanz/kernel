@@ -13,4 +13,6 @@ obj-$(CONFIG_ION_HISI) += hisilicon/
 
 obj-$(CONFIG_ION_MSM) += msm/
 
-CFLAGS_ion_system_heap.o += -Wframe-larger-than=8192
+#TODO: remove me b/62058353
+subdir-ccflags-y += \
+	-Wno-enum-conversion \

@@ -100,15 +100,6 @@ config LEDS_LM3642
 	  converter plus 1.5A constant current driver for a high-current
 	  white LED.
 
-config LEDS_LM3644
-	tristate "LED support for LM3644 Chip"
-	depends on LEDS_CLASS && I2C
-	select REGMAP_I2C
-	help
-	  This option enables support for LEDs connected to LM3644.
-	  The LM3644 is a 4MHz fixed-frequency synchronous boost
-	  converter plus 1.5A constant current driver for a high-current
-	  white LED.
 
 config LEDS_LOCOMO
 	tristate "LED Support for Locomo device"
@@ -713,15 +704,6 @@ config LEDS_QPNP_WLED
 	  Technologies, Inc. QPNP PMICs.  WLED is used for LCD backlight with
 	  variable brightness.  It also supports outputting the Avdd supply for
 	  AMOLED displays.
-
-config LEDS_MSM_GPIO_FLASH
-	tristate "Support for GPIO Flash LEDs"
-	help
-	  This driver supports the leds functionality of GPIO Flash LED. It
-	  includes flash mode and torch mode.
-
-	  To compile this driver as a module, choose M here: the module will
-	  be called leds-gpio-flash.
 
 config LEDS_QPNP_HAPTICS
 	tristate "Haptics support for QPNP PMIC"

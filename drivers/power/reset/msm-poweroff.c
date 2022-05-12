@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,10 @@
 #include <linux/delay.h>
 #include <linux/input/qpnp-power-on.h>
 #include <linux/of_address.h>
+#include <linux/kdebug.h>
+#include <linux/notifier.h>
+#include <linux/kallsyms.h>
+#include <linux/io.h>
 
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
@@ -49,25 +53,30 @@
 #define SCM_DLOAD_MINIDUMP		0X20
 #define SCM_DLOAD_BOTHDUMPS	(SCM_DLOAD_MINIDUMP | SCM_DLOAD_FULLDUMP)
 
+#define MAX_SZ_DIAG_ERR_MSG     100
+
+struct reboot_params {
+	u8 msg[0];
+};
+
 static int restart_mode;
-static void *restart_reason;
+static void __iomem *restart_reason, *dload_type_addr;
+static struct reboot_params *reboot_params;
+static size_t rst_msg_size;
 static bool scm_pmic_arbiter_disable_supported;
 static bool scm_deassert_ps_hold_supported;
 /* Download mode master kill-switch */
 static void __iomem *msm_ps_hold;
 static phys_addr_t tcsr_boot_misc_detect;
-static void scm_disable_sdi(void);
-static bool force_warm_reboot;
-
-#ifdef CONFIG_QCOM_DLOAD_MODE
 /* Runtime could be only changed value once.
  * There is no API from TZ to re-enable the registers.
  * So the SDI cannot be re-enabled when it already by-passed.
  */
 static int download_mode = 1;
-#else
-static const int download_mode;
-#endif
+static bool force_warm_reboot_on_thermal;
+static struct kobject dload_kobj;
+static void scm_disable_sdi(void);
+
 
 #ifdef CONFIG_QCOM_DLOAD_MODE
 #define EDL_MODE_PROP "qcom,msm-imem-emergency_download_mode"
@@ -85,8 +94,6 @@ static void *emergency_dload_mode_addr;
 static void *kaslr_imem_addr;
 #endif
 static bool scm_dload_supported;
-static struct kobject dload_kobj;
-static void *dload_type_addr;
 
 static int dload_set(const char *val, const struct kernel_param *kp);
 /* interface for exporting attributes */
@@ -106,9 +113,74 @@ struct reset_attribute {
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
 
+static bool scandump_test;
+module_param(scandump_test, bool, 0644);
+MODULE_PARM_DESC(scandump_test, "Set 1 to enable scandump test");
+
+static bool warm_reset;
+module_param(warm_reset, bool, 0644);
+MODULE_PARM_DESC(warm_reset, "Set 1 to override default cold-reset");
+
+static struct die_args *tombstone;
+
+void set_restart_msg(const char *msg)
+{
+	if (!reboot_params || rst_msg_size == 0)
+		return;
+
+	pr_info("%s: set restart msg = `%s'\r\n", __func__, msg?:"<null>");
+	memset_io(reboot_params->msg, 0, rst_msg_size);
+	memcpy_toio(reboot_params->msg, msg,
+			min(strlen(msg), rst_msg_size - 1));
+}
+EXPORT_SYMBOL(set_restart_msg);
+
+int die_notify(struct notifier_block *self,
+				       unsigned long val, void *data)
+{
+	static struct die_args args;
+
+	memcpy(&args, data, sizeof(args));
+	tombstone = &args;
+	pr_debug("saving oops: %pK\n", (void *) tombstone);
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block die_nb = {
+	.notifier_call = die_notify,
+};
+
 static int panic_prep_restart(struct notifier_block *this,
 			      unsigned long event, void *ptr)
 {
+	char kernel_panic_msg[MAX_SZ_DIAG_ERR_MSG] = "Kernel Panic";
+
+	if (rst_msg_size <= 0)
+		goto out;
+
+	if (tombstone) { /* tamper the panic message for Oops */
+		char pc_symn[KSYM_NAME_LEN] = "<unknown>";
+		char lr_symn[KSYM_NAME_LEN] = "<unknown>";
+
+#if defined(CONFIG_ARM)
+		sprint_symbol(pc_symn, tombstone->regs->ARM_pc);
+		sprint_symbol(lr_symn, tombstone->regs->ARM_lr);
+#elif defined(CONFIG_ARM64)
+		sprint_symbol(pc_symn, tombstone->regs->pc);
+		sprint_symbol(lr_symn, tombstone->regs->regs[30]);
+#endif
+
+		snprintf(kernel_panic_msg, rst_msg_size - 1,
+				"KP: %s PC:%s LR:%s",
+				current->comm, pc_symn, lr_symn);
+	} else {
+		snprintf(kernel_panic_msg, rst_msg_size - 1,
+				"KP: %s", (char *)ptr);
+	}
+
+	set_restart_msg(kernel_panic_msg);
+
+out:
 	in_panic = 1;
 	return NOTIFY_DONE;
 }
@@ -155,6 +227,9 @@ static void set_dload_mode(int on)
 	ret = scm_set_dload_mode(on ? dload_type : 0, 0);
 	if (ret)
 		pr_err("Failed to set secure DLOAD mode: %d\n", ret);
+
+	if (!on)
+		scm_disable_sdi();
 
 	dload_mode_enabled = on;
 }
@@ -215,7 +290,7 @@ static int dload_set(const char *val, const struct kernel_param *kp)
 #else
 static void set_dload_mode(int on)
 {
-	return;
+	scm_disable_sdi();
 }
 
 static void enable_emergency_dload_mode(void)
@@ -281,7 +356,11 @@ static void halt_spmi_pmic_arbiter(void)
 
 static void msm_restart_prepare(const char *cmd)
 {
-	bool need_warm_reset = false;
+	bool need_warm_reset = warm_reset;
+
+	/* configure reset reason back to 0 before reset */
+	qpnp_pon_set_restart_reason(PON_RESTART_REASON_UNKNOWN);
+
 #ifdef CONFIG_QCOM_DLOAD_MODE
 	/* Write download mode flags if we're panic'ing
 	 * Write download mode flags if restart_mode says so
@@ -298,24 +377,18 @@ static void msm_restart_prepare(const char *cmd)
 			((cmd != NULL && cmd[0] != '\0') &&
 			!strcmp(cmd, "edl")))
 			need_warm_reset = true;
-	} else {
-		need_warm_reset = (get_dload_mode() ||
-				(cmd != NULL && cmd[0] != '\0'));
+	} else if (get_dload_mode() || (cmd != NULL && cmd[0] != '\0')) {
+		need_warm_reset = true;
 	}
-
-	if (force_warm_reboot)
-		pr_info("Forcing a warm reset of the system\n");
-
-	/* Hard reset the PMIC unless memory contents must be maintained. */
-	if (force_warm_reboot || need_warm_reset)
-		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
-	else
-		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 
 	if (in_panic) {
 		qpnp_pon_set_restart_reason(PON_RESTART_REASON_PANIC);
 	} else if (cmd != NULL) {
-		if (!strncmp(cmd, "bootloader", 10)) {
+		if (!strncmp(cmd, "packout", strlen("packout"))) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_OEM_PACKOUT);
+			__raw_writel(0x77665500, restart_reason);
+		} else if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
 			__raw_writel(0x77665500, restart_reason);
@@ -339,6 +412,14 @@ static void msm_restart_prepare(const char *cmd)
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_KEYS_CLEAR);
 			__raw_writel(0x7766550a, restart_reason);
+		} else if (!strcmp(cmd, "shutdown,thermal")) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_SHUTDOWN_THERMAL);
+			__raw_writel(0x7766550b, restart_reason);
+
+			if (force_warm_reboot_on_thermal)
+				need_warm_reset = true;
+
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned long code;
 			unsigned long reset_reason;
@@ -365,16 +446,17 @@ static void msm_restart_prepare(const char *cmd)
 					     restart_reason);
 			}
 		} else if (!strncmp(cmd, "edl", 3)) {
-			if (0)
 			enable_emergency_dload_mode();
 		} else {
-			qpnp_pon_set_restart_reason(PON_RESTART_REASON_NORMAL);
 			__raw_writel(0x77665501, restart_reason);
 		}
-	} else {
-		qpnp_pon_set_restart_reason(PON_RESTART_REASON_NORMAL);
-		__raw_writel(0x77665501, restart_reason);
 	}
+
+	/* Hard reset the PMIC unless memory contents must be maintained. */
+	if (need_warm_reset)
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_WARM_RESET);
+	else
+		qpnp_pon_system_pwr_off(PON_POWER_OFF_HARD_RESET);
 
 	flush_cache_all();
 
@@ -415,6 +497,9 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 
 	msm_restart_prepare(cmd);
 
+	if (in_panic && scandump_test)
+		goto enable_sdi_reset;
+
 #ifdef CONFIG_QCOM_DLOAD_MODE
 	/*
 	 * Trigger a watchdog bite here and if this fails,
@@ -425,7 +510,7 @@ static void do_msm_restart(enum reboot_mode reboot_mode, const char *cmd)
 		msm_trigger_wdog_bite();
 #endif
 
-	scm_disable_sdi();
+enable_sdi_reset:
 	halt_spmi_pmic_arbiter();
 	deassert_ps_hold();
 
@@ -437,7 +522,6 @@ static void do_msm_poweroff(void)
 	pr_notice("Powering off the SoC\n");
 
 	set_dload_mode(0);
-	scm_disable_sdi();
 	qpnp_pon_system_pwr_off(PON_POWER_OFF_SHUTDOWN);
 
 	halt_spmi_pmic_arbiter();
@@ -447,7 +531,6 @@ static void do_msm_poweroff(void)
 	pr_err("Powering off has failed\n");
 }
 
-#ifdef CONFIG_QCOM_DLOAD_MODE
 static ssize_t attr_show(struct kobject *kobj, struct attribute *attr,
 				char *buf)
 {
@@ -578,7 +661,42 @@ static struct attribute *reset_attrs[] = {
 static struct attribute_group reset_attr_group = {
 	.attrs = reset_attrs,
 };
-#endif
+
+int restart_handler_init(void)
+{
+	struct device_node *np;
+	struct resource res;
+	u32 rst_info_size = 0;
+
+	np = of_find_compatible_node(NULL, NULL,
+				"msm-imem-restart_info");
+	if (!np) {
+		pr_err("unable to find DT imem restart info node\n");
+		return -ENOENT;
+	} else {
+		reboot_params = of_iomap(np, 0);
+		if (!reboot_params) {
+			pr_err("unable to map imem restart info offset\n");
+			return -ENOMEM;
+		}
+
+		of_address_to_resource(np, 0, &res);
+		rst_info_size = resource_size(&res);
+		if (rst_info_size == 0) {
+			pr_err("%s: Failed to find info_size.\n", __func__);
+			iounmap(reboot_params);
+			return -EINVAL;
+		}
+	}
+
+	rst_msg_size = (size_t) rst_info_size -
+		       offsetof(struct reboot_params, msg);
+	rst_msg_size = min(rst_msg_size, (size_t)MAX_SZ_DIAG_ERR_MSG);
+
+	set_restart_msg("Unknown");
+	pr_debug("%s: default message is set\n", __func__);
+	return 0;
+}
 
 static int msm_restart_probe(struct platform_device *pdev)
 {
@@ -587,10 +705,14 @@ static int msm_restart_probe(struct platform_device *pdev)
 	struct device_node *np;
 	int ret = 0;
 
+	if (restart_handler_init() < 0)
+		pr_err("restart_handler_init failure\n");
+
 #ifdef CONFIG_QCOM_DLOAD_MODE
 	if (scm_is_call_available(SCM_SVC_BOOT, SCM_DLOAD_CMD) > 0)
 		scm_dload_supported = true;
 
+	register_die_notifier(&die_nb);
 	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
 	np = of_find_compatible_node(NULL, NULL, DL_MODE_PROP);
 	if (!np) {
@@ -692,11 +814,9 @@ skip_sysfs_create:
 		scm_deassert_ps_hold_supported = true;
 
 	set_dload_mode(download_mode);
-	if (!download_mode)
-		scm_disable_sdi();
 
-	force_warm_reboot = of_property_read_bool(dev->of_node,
-						"qcom,force-warm-reboot");
+	force_warm_reboot_on_thermal = of_property_read_bool(dev->of_node,
+						"qcom,force-warm-reboot-on-thermal-shutdown");
 
 	return 0;
 

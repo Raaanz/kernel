@@ -115,6 +115,10 @@ struct mmc_request {
 	struct mmc_cmdq_req	*cmdq_req;
 	struct request *req;
 
+#ifdef CONFIG_DEBUG_FS
+	ktime_t issue_time_stamp;
+	ktime_t complete_time_stamp;
+#endif
 	/* Allow other commands during this ongoing data transfer or busy wait */
 	bool			cap_cmd_during_tfr;
 	ktime_t			io_start;
@@ -154,6 +158,7 @@ extern void mmc_cmdq_post_req(struct mmc_host *host, int tag, int err);
 extern int mmc_cmdq_start_req(struct mmc_host *host,
 			      struct mmc_cmdq_req *cmdq_req);
 extern int mmc_cmdq_prepare_flush(struct mmc_command *cmd);
+extern int mmc_cmdq_prepare_cache_barrier(struct mmc_command *cmd);
 extern int mmc_cmdq_wait_for_dcmd(struct mmc_host *host,
 			struct mmc_cmdq_req *cmdq_req);
 extern int mmc_cmdq_erase(struct mmc_cmdq_req *cmdq_req,

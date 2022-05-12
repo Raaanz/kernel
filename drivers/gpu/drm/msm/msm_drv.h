@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018 XiaoMi, Inc.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -74,9 +73,6 @@ struct msm_gem_vma;
 
 #define TEARDOWN_DEADLOCK_RETRY_MAX 5
 
-extern atomic_t resume_pending;
-extern wait_queue_head_t resume_wait_q;
-
 struct msm_file_private {
 	/* currently we don't do anything useful with this.. but when
 	 * per-context address spaces are supported we'd keep track of
@@ -127,7 +123,6 @@ enum msm_mdp_plane_property {
 	PLANE_PROP_SRC_CONFIG,
 	PLANE_PROP_FB_TRANSLATION_MODE,
 	PLANE_PROP_MULTIRECT_MODE,
-	PLANE_PROP_LAYOUT,
 
 	/* total # of properties */
 	PLANE_PROP_COUNT
@@ -201,6 +196,12 @@ enum msm_mdp_conn_property {
 
 	/* total # of properties */
 	CONNECTOR_PROP_COUNT
+};
+
+struct msm_vblank_ctrl {
+	struct kthread_work work;
+	struct list_head event_list;
+	spinlock_t lock;
 };
 
 #define MAX_H_TILES_PER_DISPLAY 2
@@ -623,6 +624,8 @@ struct msm_drm_private {
 	struct notifier_block vmap_notifier;
 	struct shrinker shrinker;
 
+	struct msm_vblank_ctrl vblank_ctrl;
+
 	/* task holding struct_mutex.. currently only used in submit path
 	 * to detect and reject faults from copy_from_user() for submit
 	 * ioctl.
@@ -668,6 +671,7 @@ void __msm_fence_worker(struct work_struct *work);
 
 int msm_atomic_commit(struct drm_device *dev,
 		struct drm_atomic_state *state, bool nonblock);
+int msm_drm_notifier_call_chain(unsigned long val, void *v);
 
 void msm_gem_submit_free(struct msm_gem_submit *submit);
 void msm_gem_unmap_vma(struct msm_gem_address_space *aspace,

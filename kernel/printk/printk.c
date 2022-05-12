@@ -45,7 +45,6 @@
 #include <linux/utsname.h>
 #include <linux/ctype.h>
 #include <linux/uio.h>
-#include <soc/qcom/boot_stats.h>
 
 #include <asm/uaccess.h>
 #include <asm/sections.h>
@@ -343,11 +342,15 @@ struct printk_log {
 	u8 facility;		/* syslog facility */
 	u8 flags:5;		/* internal record flags */
 	u8 level:3;		/* syslog level */
+	unsigned int cpu;
+	pid_t pid;
 }
 #ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
 __packed __aligned(4)
 #endif
 ;
+
+static struct printk_log *last_msg;
 
 /*
  * The logbuf_lock protects kmsg buffer, indices, counters.  This can be taken
@@ -388,7 +391,6 @@ static u32 clear_idx;
 /* record buffer */
 #define LOG_ALIGN __alignof__(struct printk_log)
 #define __LOG_BUF_LEN (1 << CONFIG_LOG_BUF_SHIFT)
-#define LOG_BUF_LEN_MAX (u32)(1 << 31)
 static char __log_buf[__LOG_BUF_LEN] __aligned(LOG_ALIGN);
 static char *log_buf = __log_buf;
 static u32 log_buf_len = __LOG_BUF_LEN;
@@ -581,13 +583,16 @@ static int log_store(int facility, int level,
 	if (ts_nsec > 0)
 		msg->ts_nsec = ts_nsec;
 	else
-		msg->ts_nsec = local_clock() + get_total_sleep_time_nsec();
+		msg->ts_nsec = local_clock();
 	memset(log_dict(msg) + dict_len, 0, pad_len);
 	msg->len = size;
 
 	/* insert message */
 	log_next_idx += msg->len;
 	log_next_seq++;
+
+	/* record last_msg for extension */
+	last_msg = msg;
 
 	return msg->text_len;
 }
@@ -606,7 +611,7 @@ static int syslog_action_restricted(int type)
 	       type != SYSLOG_ACTION_SIZE_BUFFER;
 }
 
-int check_syslog_permissions(int type, int source)
+static int check_syslog_permissions(int type, int source)
 {
 	/*
 	 * If this is from /proc/kmsg and we've already opened it, then we've
@@ -634,7 +639,6 @@ int check_syslog_permissions(int type, int source)
 ok:
 	return security_syslog(type);
 }
-EXPORT_SYMBOL_GPL(check_syslog_permissions);
 
 static void append_char(char **pp, char *e, char c)
 {
@@ -989,23 +993,18 @@ void log_buf_kexec_setup(void)
 static unsigned long __initdata new_log_buf_len;
 
 /* we practice scaling the ring buffer by powers of 2 */
-static void __init log_buf_len_update(u64 size)
+static void __init log_buf_len_update(unsigned size)
 {
-	if (size > (u64)LOG_BUF_LEN_MAX) {
-		size = (u64)LOG_BUF_LEN_MAX;
-		pr_err("log_buf over 2G is not supported.\n");
-	}
-
 	if (size)
 		size = roundup_pow_of_two(size);
 	if (size > log_buf_len)
-		new_log_buf_len = (unsigned long)size;
+		new_log_buf_len = size;
 }
 
 /* save requested log_buf_len since it's too early to process it */
 static int __init log_buf_len_setup(char *str)
 {
-	u64 size;
+	unsigned int size;
 
 	if (!str)
 		return -EINVAL;
@@ -1055,7 +1054,7 @@ void __init setup_log_buf(int early)
 {
 	unsigned long flags;
 	char *new_log_buf;
-	unsigned int free;
+	int free;
 
 	if (log_buf != __log_buf)
 		return;
@@ -1075,7 +1074,7 @@ void __init setup_log_buf(int early)
 	}
 
 	if (unlikely(!new_log_buf)) {
-		pr_err("log_buf_len: %lu bytes not available\n",
+		pr_err("log_buf_len: %ld bytes not available\n",
 			new_log_buf_len);
 		return;
 	}
@@ -1088,8 +1087,8 @@ void __init setup_log_buf(int early)
 	memcpy(log_buf, __log_buf, __LOG_BUF_LEN);
 	raw_spin_unlock_irqrestore(&logbuf_lock, flags);
 
-	pr_info("log_buf_len: %u bytes\n", log_buf_len);
-	pr_info("early log buf free: %u(%u%%)\n",
+	pr_info("log_buf_len: %d bytes\n", log_buf_len);
+	pr_info("early log buf free: %d(%d%%)\n",
 		free, (free * 100) / __LOG_BUF_LEN);
 }
 
@@ -1178,7 +1177,6 @@ static size_t print_time(u64 ts, char *buf)
 	if (!printk_time)
 		return 0;
 
-	ts += get_total_sleep_time_nsec();
 	rem_nsec = do_div(ts, 1000000000);
 
 	if (!buf)
@@ -1186,6 +1184,43 @@ static size_t print_time(u64 ts, char *buf)
 
 	return sprintf(buf, "[%5lu.%06lu] ",
 		       (unsigned long)ts, rem_nsec / 1000);
+}
+
+static bool printk_cpu = IS_ENABLED(CONFIG_PRINTK_CPU_ID);
+module_param_named(cpu, printk_cpu, bool, S_IRUGO | S_IWUSR);
+
+static bool printk_pid = IS_ENABLED(CONFIG_PRINTK_PID);
+module_param_named(pid, printk_pid, bool, S_IRUGO | S_IWUSR);
+
+static size_t print_cpu(unsigned int cpu, char *buf)
+{
+	if (!printk_cpu)
+		return 0;
+
+	if (!buf)
+		return snprintf(NULL, 0, "c%u ", cpu);
+
+	return sprintf(buf, "c%u ", cpu);
+}
+
+static size_t print_pid(pid_t pid, char *buf)
+{
+	if (!printk_pid)
+		return 0;
+
+	if (!buf)
+		return snprintf(NULL, 0, "%6u ", pid);
+
+	return sprintf(buf, "%6u ", pid);
+}
+
+static void update_msg_ext(unsigned int cpu, pid_t pid)
+{
+	if (!last_msg)
+		return;
+
+	last_msg->cpu = cpu;
+	last_msg->pid = pid;
 }
 
 static size_t print_prefix(const struct printk_log *msg, bool syslog, char *buf)
@@ -1208,6 +1243,8 @@ static size_t print_prefix(const struct printk_log *msg, bool syslog, char *buf)
 	}
 
 	len += print_time(msg->ts_nsec, buf ? buf + len : NULL);
+	len += print_cpu(msg->cpu, buf ? buf + len : NULL);
+	len += print_pid(msg->pid, buf ? buf + len : NULL);
 	return len;
 }
 
@@ -1607,6 +1644,8 @@ static struct cont {
 	u8 facility;			/* log facility of first message */
 	enum log_flags flags;		/* prefix, newline flags */
 	bool flushed:1;			/* buffer sealed and committed */
+	unsigned int cpu;
+	pid_t pid;
 } cont;
 
 static void cont_flush(void)
@@ -1624,6 +1663,7 @@ static void cont_flush(void)
 		log_store(cont.facility, cont.level, cont.flags | LOG_NOCONS,
 			  cont.ts_nsec, NULL, 0, cont.buf, cont.len);
 		cont.flushed = true;
+		update_msg_ext(cont.cpu, cont.pid);
 	} else {
 		/*
 		 * If no fragment of this line ever reached the console,
@@ -1631,6 +1671,7 @@ static void cont_flush(void)
 		 */
 		log_store(cont.facility, cont.level, cont.flags, 0,
 			  NULL, 0, cont.buf, cont.len);
+		update_msg_ext(cont.cpu, cont.pid);
 		cont.len = 0;
 	}
 }
@@ -1654,10 +1695,12 @@ static bool cont_add(int facility, int level, enum log_flags flags, const char *
 		cont.facility = facility;
 		cont.level = level;
 		cont.owner = current;
-		cont.ts_nsec = local_clock() + get_total_sleep_time_nsec();
+		cont.ts_nsec = local_clock();
 		cont.flags = flags;
 		cont.cons = 0;
 		cont.flushed = false;
+		cont.cpu = smp_processor_id();
+		cont.pid = current->pid;
 	}
 
 	memcpy(cont.buf + cont.len, text, len);
@@ -1794,6 +1837,7 @@ asmlinkage int vprintk_emit(int facility, int level,
 		printed_len += log_store(0, 2, LOG_PREFIX|LOG_NEWLINE, 0,
 					 NULL, 0, recursion_msg,
 					 strlen(recursion_msg));
+		update_msg_ext(logbuf_cpu, current->pid);
 	}
 
 	nmi_message_lost = get_nmi_message_lost();
@@ -1803,6 +1847,7 @@ asmlinkage int vprintk_emit(int facility, int level,
 				     nmi_message_lost);
 		printed_len += log_store(0, 2, LOG_PREFIX|LOG_NEWLINE, 0,
 					 NULL, 0, textbuf, text_len);
+		update_msg_ext(logbuf_cpu, current->pid);
 	}
 
 	/*
@@ -1850,6 +1895,7 @@ asmlinkage int vprintk_emit(int facility, int level,
 		lflags |= LOG_PREFIX|LOG_NEWLINE;
 
 	printed_len += log_output(facility, level, lflags, dict, dictlen, text, text_len);
+	update_msg_ext(logbuf_cpu, current->pid);
 
 	logbuf_cpu = UINT_MAX;
 	raw_spin_unlock(&logbuf_lock);
@@ -2045,9 +2091,6 @@ static int __init console_setup(char *str)
 	char *s, *options, *brl_options = NULL;
 	int idx;
 
-	if (str[0] == 0)
-		return 1;
-
 	if (_braille_console_setup(&str, &brl_options))
 		return 1;
 
@@ -2114,11 +2157,6 @@ module_param_named(console_suspend, console_suspend_enabled,
 MODULE_PARM_DESC(console_suspend, "suspend console during suspend"
 	" and hibernate operations");
 
-int is_console_suspended(void)
-{
-	return console_suspended;
-}
-
 /**
  * suspend_console - suspend the console subsystem
  *
@@ -2138,7 +2176,6 @@ void resume_console(void)
 {
 	if (!console_suspend_enabled)
 		return;
-	place_marker("M - System Resume Started");
 	down_console_sem();
 	console_suspended = 0;
 	console_unlock();
@@ -2148,20 +2185,27 @@ void resume_console(void)
 
 /**
  * console_cpu_notify - print deferred console messages after CPU hotplug
- * @cpu: unused
+ * @self: notifier struct
+ * @action: CPU hotplug event
+ * @hcpu: unused
  *
  * If printk() is called from a CPU that is not online yet, the messages
  * will be spooled but will not show up on the console.  This function is
  * called when a new CPU comes online (or fails to come up), and ensures
  * that any such output gets printed.
  */
-static int console_cpu_notify(unsigned int cpu)
+static int console_cpu_notify(struct notifier_block *self,
+	unsigned long action, void *hcpu)
 {
-	if (!cpuhp_tasks_frozen) {
+	switch (action) {
+	case CPU_ONLINE:
+	case CPU_DEAD:
+	case CPU_DOWN_FAILED:
+	case CPU_UP_CANCELED:
 		console_lock();
 		console_unlock();
 	}
-	return 0;
+	return NOTIFY_OK;
 }
 
 #endif
@@ -2800,7 +2844,6 @@ EXPORT_SYMBOL(unregister_console);
 static int __init printk_late_init(void)
 {
 	struct console *con;
-	int __maybe_unused ret;
 
 	for_each_console(con) {
 		if (!keep_bootcon && con->flags & CON_BOOT) {
@@ -2816,12 +2859,7 @@ static int __init printk_late_init(void)
 		}
 	}
 #ifdef CONFIG_CONSOLE_FLUSH_ON_HOTPLUG
-	ret = cpuhp_setup_state_nocalls(CPUHP_PRINTK_DEAD, "printk:dead", NULL,
-					console_cpu_notify);
-	WARN_ON(ret < 0);
-	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "printk:online",
-					console_cpu_notify, NULL);
-	WARN_ON(ret < 0);
+	hotcpu_notifier(console_cpu_notify, 0);
 #endif
 	return 0;
 }

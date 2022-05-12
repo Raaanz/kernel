@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, 2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,7 +26,6 @@
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-device.h>
 #include <media/videobuf2-core.h>
-#include <media/msmb_generic_buf_mgr.h>
 
 #include "msm.h"
 #include "msm_buf_mgr.h"
@@ -189,9 +188,7 @@ static int msm_isp_prepare_v4l2_buf(struct msm_isp_buf_mgr *buf_mgr,
 	int i, rc = -1;
 	int ret;
 	struct msm_isp_buffer_mapped_info *mapped_info;
-#ifndef CONFIG_MSM_ISP_V1
 	uint32_t accu_length = 0;
-#endif
 	struct msm_isp_bufq *bufq = NULL;
 
 	bufq = msm_isp_get_bufq(buf_mgr, buf_info->bufq_handle);
@@ -230,12 +227,8 @@ static int msm_isp_prepare_v4l2_buf(struct msm_isp_buf_mgr *buf_mgr,
 			goto get_phy_err;
 		}
 
-#ifdef CONFIG_MSM_ISP_V1
-		mapped_info->paddr += qbuf_buf->planes[i].offset;
-#else
 		mapped_info->paddr += accu_length;
 		accu_length += qbuf_buf->planes[i].length;
-#endif
 
 		CDBG("%s: plane: %d addr:%pK\n",
 			__func__, i, (void *)mapped_info->paddr);
@@ -676,10 +669,6 @@ static int msm_isp_put_buf_unsafe(struct msm_isp_buf_mgr *buf_mgr,
 		rc = 0;
 		break;
 	case MSM_ISP_BUFFER_STATE_QUEUED:
-		if (IS_ENABLED(CONFIG_MSM_ISP_V1)) {
-			rc = 0;
-			break;
-		}
 	case MSM_ISP_BUFFER_STATE_DIVERTED:
 	default:
 		WARN(1, "%s: bufq 0x%x, buf idx 0x%x, incorrect state = %d",
@@ -742,17 +731,10 @@ static int msm_isp_buf_divert(struct msm_isp_buf_mgr *buf_mgr,
 	spin_lock_irqsave(&bufq->bufq_lock, flags);
 
 	buf_info->frame_id = frame_id;
-#ifdef CONFIG_MSM_ISP_V1
-	if (buf_info->state == MSM_ISP_BUFFER_STATE_DEQUEUED) {
-		buf_info->state = MSM_ISP_BUFFER_STATE_DIVERTED;
-		buf_info->tv = tv;
-	}
-#else
 	if (BUF_SRC(bufq->stream_id) == MSM_ISP_BUFFER_SRC_NATIVE) {
 		buf_info->state = MSM_ISP_BUFFER_STATE_DIVERTED;
 		buf_info->tv = tv;
 	}
-#endif
 	spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 	return 0;
 }
@@ -783,12 +765,7 @@ static int msm_isp_buf_done(struct msm_isp_buf_mgr *buf_mgr,
 	state = buf_info->state;
 
 	if (BUF_SRC(bufq->stream_id) == MSM_ISP_BUFFER_SRC_HAL) {
-#ifdef CONFIG_MSM_ISP_V1
-		if (state == MSM_ISP_BUFFER_STATE_DEQUEUED ||
-			state == MSM_ISP_BUFFER_STATE_DIVERTED) {
-#else
 		if (state == MSM_ISP_BUFFER_STATE_DEQUEUED) {
-#endif
 			buf_info->state = MSM_ISP_BUFFER_STATE_DISPATCHED;
 			spin_unlock_irqrestore(&bufq->bufq_lock, flags);
 			buf_mgr->vb2_ops->buf_done(buf_info->vb2_v4l2_buf,
@@ -1099,6 +1076,7 @@ static void msm_isp_release_all_bufq(
 	}
 }
 
+
 /**
  * msm_isp_buf_put_scratch() - Release scratch buffers
  * @buf_mgr: The buffer structure for h/w
@@ -1240,6 +1218,7 @@ err1:
 	mutex_unlock(&buf_mgr->lock);
 	return rc;
 }
+
 
 static int msm_isp_init_isp_buf_mgr(struct msm_isp_buf_mgr *buf_mgr,
 	const char *ctx_name)

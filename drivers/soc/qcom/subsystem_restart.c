@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -22,12 +22,14 @@
 #include <linux/io.h>
 #include <linux/kthread.h>
 #include <linux/time.h>
+#include <linux/rtc.h>
 #include <linux/suspend.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/device.h>
 #include <linux/idr.h>
+#include <linux/debugfs.h>
 #include <linux/interrupt.h>
 #include <linux/of_gpio.h>
 #include <linux/cdev.h>
@@ -38,11 +40,6 @@
 #include <trace/events/trace_msm_pil_event.h>
 
 #include <asm/current.h>
-#include <linux/timer.h>
-#include <linux/io.h>
-
-#define JTAG_ID 0x786130
-#define HW_VERSION_OFFSET 28
 
 #include "peripheral-loader.h"
 
@@ -57,35 +54,6 @@ module_param(enable_debug, int, 0644);
 /* The maximum shutdown timeout is the product of MAX_LOOPS and DELAY_MS. */
 #define SHUTDOWN_ACK_MAX_LOOPS	100
 #define SHUTDOWN_ACK_DELAY_MS	100
-
-#ifdef CONFIG_SETUP_SSR_NOTIF_TIMEOUTS
-/* Timeout used for detection of notification hangs. In seconds.*/
-#define SYSMON_COMM_TIMEOUT	CONFIG_SSR_SYSMON_NOTIF_TIMEOUT
-#define SUBSYS_NOTIF_TIMEOUT	CONFIG_SSR_SUBSYS_NOTIF_TIMEOUT
-
-#define setup_timeout(dest_ss, source_ss, comm_type) \
-	_setup_timeout(dest_ss, source_ss, comm_type)
-#define cancel_timeout(subsys) del_timer_sync(&subsys->timeout_data.timer)
-#define init_subsys_timer(subsys) _init_subsys_timer(subsys)
-
-/* Timeout values */
-static unsigned long timeout_vals[NUM_SSR_COMMS] = {
-	[SUBSYS_TO_SUBSYS_SYSMON] = SYSMON_COMM_TIMEOUT,
-	[SUBSYS_TO_HLOS] = SUBSYS_NOTIF_TIMEOUT,
-	[HLOS_TO_SUBSYS_SYSMON_SHUTDOWN] = SYSMON_COMM_TIMEOUT,
-};
-
-#ifdef CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT
-#define SSR_NOTIF_TIMEOUT_WARN(fmt...) panic(fmt)
-#else /* CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT */
-#define SSR_NOTIF_TIMEOUT_WARN(fmt...) WARN(1, fmt)
-#endif /* CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT */
-
-#else /* CONFIG_SETUP_SSR_NOTIF_TIMEOUTS */
-#define setup_timeout(dest_ss, source_ss, sysmon_comm)
-#define cancel_timeout(subsys)
-#define init_subsys_timer(subsys)
-#endif /* CONFIG_SETUP_SSR_NOTIF_TIMEOUTS */
 
 /**
  * enum p_subsys_state - state of a subsystem (private)
@@ -183,6 +151,7 @@ struct restart_log {
  * @restart_level: restart level (0 - panic, 1 - related, 2 - independent, etc.)
  * @restart_order: order of other devices this devices restarts with
  * @crash_count: number of times the device has crashed
+ * @dentry: debugfs directory for this device
  * @do_ramdump_on_put: ramdump on subsystem_put() if true
  * @err_ready: completion variable to record error ready from subsystem
  * @crashed: indicates if subsystem has crashed
@@ -204,6 +173,9 @@ struct subsys_device {
 	int restart_level;
 	int crash_count;
 	struct subsys_soc_restart_order *restart_order;
+#ifdef CONFIG_DEBUG_FS
+	struct dentry *dentry;
+#endif
 	bool do_ramdump_on_put;
 	struct cdev char_dev;
 	dev_t dev_no;
@@ -251,6 +223,19 @@ static ssize_t crash_count_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	return snprintf(buf, PAGE_SIZE, "%d\n", to_subsys(dev)->crash_count);
+}
+static ssize_t crash_reason_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%s\n",
+			to_subsys(dev)->desc->last_crash_reason);
+}
+
+static ssize_t crash_timestamp_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%s\n",
+			to_subsys(dev)->desc->last_crash_timestamp);
 }
 
 static ssize_t
@@ -378,17 +363,18 @@ static struct device_attribute subsys_attrs[] = {
 	__ATTR_RO(name),
 	__ATTR_RO(state),
 	__ATTR_RO(crash_count),
+	__ATTR_RO(crash_reason),
+	__ATTR_RO(crash_timestamp),
 	__ATTR(restart_level, 0644, restart_level_show, restart_level_store),
 	__ATTR(firmware_name, 0644, firmware_name_show, firmware_name_store),
 	__ATTR(system_debug, 0644, system_debug_show, system_debug_store),
 	__ATTR_NULL,
 };
 
-struct bus_type subsys_bus_type = {
+static struct bus_type subsys_bus_type = {
 	.name		= "msm_subsys",
 	.dev_attrs	= subsys_attrs,
 };
-EXPORT_SYMBOL(subsys_bus_type);
 
 static DEFINE_IDA(subsys_ida);
 
@@ -504,89 +490,15 @@ static int is_ramdump_enabled(struct subsys_device *dev)
 	return enable_ramdumps;
 }
 
-#ifdef CONFIG_SETUP_SSR_NOTIF_TIMEOUTS
-static void notif_timeout_handler(unsigned long data)
-{
-	char *sysmon_msg = "Sysmon communication from %s to %s taking too long";
-	char *subsys_notif_msg = "Subsys notifier chain for %s taking too long";
-	char *sysmon_shutdwn_msg = "sysmon_send_shutdown to %s taking too long";
-	char *unknown_err_msg = "Unknown communication occurred";
-	struct subsys_notif_timeout *timeout_data =
-		(struct subsys_notif_timeout *) data;
-	enum ssr_comm comm_type = timeout_data->comm_type;
-
-	switch (comm_type) {
-	case SUBSYS_TO_SUBSYS_SYSMON:
-		SSR_NOTIF_TIMEOUT_WARN(sysmon_msg, timeout_data->source_name,
-				       timeout_data->dest_name);
-		break;
-	case SUBSYS_TO_HLOS:
-		SSR_NOTIF_TIMEOUT_WARN(subsys_notif_msg,
-				       timeout_data->source_name);
-		break;
-	case HLOS_TO_SUBSYS_SYSMON_SHUTDOWN:
-		SSR_NOTIF_TIMEOUT_WARN(sysmon_shutdwn_msg,
-				       timeout_data->dest_name);
-		break;
-	default:
-		SSR_NOTIF_TIMEOUT_WARN(unknown_err_msg);
-	}
-
-}
-
-static void _setup_timeout(struct subsys_desc *source_ss,
-			   struct subsys_desc *dest_ss, enum ssr_comm comm_type)
-{
-	struct subsys_notif_timeout *timeout_data;
-	unsigned long timeout;
-
-	switch (comm_type) {
-	case SUBSYS_TO_SUBSYS_SYSMON:
-		timeout_data = &source_ss->timeout_data;
-		timeout_data->dest_name = dest_ss->name;
-		timeout_data->source_name = source_ss->name;
-		break;
-	case SUBSYS_TO_HLOS:
-		timeout_data = &source_ss->timeout_data;
-		timeout_data->dest_name = NULL;
-		timeout_data->source_name = source_ss->name;
-		break;
-	case HLOS_TO_SUBSYS_SYSMON_SHUTDOWN:
-		timeout_data = &dest_ss->timeout_data;
-		timeout_data->dest_name = dest_ss->name;
-		timeout_data->source_name = NULL;
-		break;
-	default:
-		return;
-	}
-
-	timeout_data->timer.data = (unsigned long) timeout_data;
-	timeout_data->comm_type = comm_type;
-	timeout = jiffies + msecs_to_jiffies(timeout_vals[comm_type]);
-	mod_timer(&timeout_data->timer, timeout);
-}
-
-static void _init_subsys_timer(struct subsys_desc *subsys)
-{
-	init_timer(&subsys->timeout_data.timer);
-	subsys->timeout_data.timer.function = notif_timeout_handler;
-}
-
-#endif /* CONFIG_SETUP_SSR_NOTIF_TIMEOUTS */
-
 static void send_sysmon_notif(struct subsys_device *dev)
 {
 	struct subsys_device *subsys;
 
 	mutex_lock(&subsys_list_lock);
 	list_for_each_entry(subsys, &subsys_list, list)
-		if ((subsys->notif_state > 0) && (subsys != dev)) {
-			setup_timeout(subsys->desc, dev->desc,
-				      SUBSYS_TO_SUBSYS_SYSMON);
+		if ((subsys->notif_state > 0) && (subsys != dev))
 			sysmon_send_event(dev->desc, subsys->desc,
 						subsys->notif_state);
-			cancel_timeout(subsys->desc);
-		}
 	mutex_unlock(&subsys_list_lock);
 }
 
@@ -628,13 +540,9 @@ static void notify_each_subsys_device(struct subsys_device **list,
 		mutex_lock(&subsys_list_lock);
 		list_for_each_entry(subsys, &subsys_list, list)
 			if (dev != subsys &&
-				subsys->track.state == SUBSYS_ONLINE) {
-				setup_timeout(dev->desc, subsys->desc,
-					      SUBSYS_TO_SUBSYS_SYSMON);
+				subsys->track.state == SUBSYS_ONLINE)
 				sysmon_send_event(subsys->desc, dev->desc,
-						  notif);
-				cancel_timeout(dev->desc);
-			}
+								notif);
 		mutex_unlock(&subsys_list_lock);
 
 		if (notif == SUBSYS_AFTER_POWERUP &&
@@ -648,10 +556,8 @@ static void notify_each_subsys_device(struct subsys_device **list,
 		notif_data.pdev = pdev;
 
 		trace_pil_notif("before_send_notif", notif, dev->desc->fw_name);
-		setup_timeout(dev->desc, NULL, SUBSYS_TO_HLOS);
 		subsys_notif_queue_notification(dev->notify, notif,
 								&notif_data);
-		cancel_timeout(dev->desc);
 		trace_pil_notif("after_send_notif", notif, dev->desc->fw_name);
 	}
 }
@@ -717,7 +623,10 @@ static int wait_for_err_ready(struct subsys_device *subsys)
 static int subsystem_shutdown(struct subsys_device *dev, void *data)
 {
 	const char *name = dev->desc->name;
+	char *timestamp = dev->desc->last_crash_timestamp;
 	int ret;
+	struct timespec ts_rtc;
+	struct rtc_time tm;
 
 	pr_info("[%s:%d]: Shutting down %s\n",
 			current->comm, current->pid, name);
@@ -731,6 +640,13 @@ static int subsystem_shutdown(struct subsys_device *dev, void *data)
 			return ret;
 		}
 	}
+	/* record crash time */
+	getnstimeofday(&ts_rtc);
+	rtc_time_to_tm(ts_rtc.tv_sec - (sys_tz.tz_minuteswest * 60), &tm);
+	snprintf(timestamp, MAX_CRASH_TIMESTAMP_LEN,
+		"%d-%02d-%02d_%02d-%02d-%02d",
+		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+		tm.tm_hour, tm.tm_min, tm.tm_sec);
 	dev->crash_count++;
 	subsys_set_state(dev, SUBSYS_OFFLINE);
 	disable_all_irqs(dev);
@@ -864,11 +780,8 @@ static void subsys_stop(struct subsys_device *subsys)
 	if (!of_property_read_bool(subsys->desc->dev->of_node,
 					"qcom,pil-force-shutdown")) {
 		subsys_set_state(subsys, SUBSYS_OFFLINING);
-		setup_timeout(NULL, subsys->desc,
-			      HLOS_TO_SUBSYS_SYSMON_SHUTDOWN);
 		subsys->desc->sysmon_shutdown_ret =
 				sysmon_send_shutdown(subsys->desc);
-		cancel_timeout(subsys->desc);
 		if (subsys->desc->sysmon_shutdown_ret)
 			pr_debug("Graceful shutdown failed for %s\n", name);
 	}
@@ -933,22 +846,9 @@ void *__subsystem_get(const char *name, const char *fw_name)
 	int ret;
 	void *retval;
 	struct subsys_tracking *track;
-	void __iomem *jtag_id_vir = NULL;
-	u32 jtag_id = 0;
 
 	if (!name)
 		return NULL;
-	pr_debug("debugging: __subsystem_get: %s\n", name);
-	if (strcmp(name, "cdsp") == 0) {
-		jtag_id_vir = ioremap(JTAG_ID, 4);
-		jtag_id = readl_relaxed(jtag_id_vir);
-		iounmap(jtag_id_vir);
-		pr_debug("debugging: JTAG ID is %x\n", jtag_id);
-		if (0x0 == (jtag_id >> HW_VERSION_OFFSET)) {
-			pr_info("CDSP for 845 v1.0 is not supported!\n");
-			return NULL;
-		}
-	}
 
 	subsys = retval = find_subsys(name);
 	if (!subsys)
@@ -1341,6 +1241,87 @@ void notify_proxy_unvote(struct device *device)
 	if (dev)
 		notify_each_subsys_device(&dev, 1, SUBSYS_PROXY_UNVOTE, NULL);
 }
+
+#ifdef CONFIG_DEBUG_FS
+static ssize_t subsys_debugfs_read(struct file *filp, char __user *ubuf,
+		size_t cnt, loff_t *ppos)
+{
+	int r;
+	char buf[40];
+	struct subsys_device *subsys = filp->private_data;
+
+	r = snprintf(buf, sizeof(buf), "%d\n", subsys->count);
+	return simple_read_from_buffer(ubuf, cnt, ppos, buf, r);
+}
+
+static ssize_t subsys_debugfs_write(struct file *filp,
+		const char __user *ubuf, size_t cnt, loff_t *ppos)
+{
+	struct subsys_device *subsys = filp->private_data;
+	char buf[10];
+	char *cmp;
+
+	cnt = min(cnt, sizeof(buf) - 1);
+	if (copy_from_user(&buf, ubuf, cnt))
+		return -EFAULT;
+	buf[cnt] = '\0';
+	cmp = strstrip(buf);
+
+	if (!strcmp(cmp, "restart")) {
+		if (subsystem_restart_dev(subsys))
+			return -EIO;
+	} else if (!strcmp(cmp, "get")) {
+		if (subsystem_get(subsys->desc->name))
+			return -EIO;
+	} else if (!strcmp(cmp, "put")) {
+		subsystem_put(subsys);
+	} else {
+		return -EINVAL;
+	}
+
+	return cnt;
+}
+
+static const struct file_operations subsys_debugfs_fops = {
+	.open	= simple_open,
+	.read	= subsys_debugfs_read,
+	.write	= subsys_debugfs_write,
+};
+
+static struct dentry *subsys_base_dir;
+
+static int __init subsys_debugfs_init(void)
+{
+	subsys_base_dir = debugfs_create_dir("msm_subsys", NULL);
+	return !subsys_base_dir ? -ENOMEM : 0;
+}
+
+static void subsys_debugfs_exit(void)
+{
+	debugfs_remove_recursive(subsys_base_dir);
+}
+
+static int subsys_debugfs_add(struct subsys_device *subsys)
+{
+	if (!subsys_base_dir)
+		return -ENOMEM;
+
+	subsys->dentry = debugfs_create_file(subsys->desc->name,
+				0644, subsys_base_dir,
+				subsys, &subsys_debugfs_fops);
+	return !subsys->dentry ? -ENOMEM : 0;
+}
+
+static void subsys_debugfs_remove(struct subsys_device *subsys)
+{
+	debugfs_remove(subsys->dentry);
+}
+#else
+static int __init subsys_debugfs_init(void) { return 0; };
+static void subsys_debugfs_exit(void) { }
+static int subsys_debugfs_add(struct subsys_device *subsys) { return 0; }
+static void subsys_debugfs_remove(struct subsys_device *subsys) { }
+#endif
 
 static int subsys_device_open(struct inode *inode, struct file *file)
 {
@@ -1769,7 +1750,6 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 	INIT_WORK(&subsys->work, subsystem_restart_wq_func);
 	INIT_WORK(&subsys->device_restart_work, device_restart_work_hdlr);
 	spin_lock_init(&subsys->track.s_lock);
-	init_subsys_timer(desc);
 
 	subsys->id = ida_simple_get(&subsys_ida, 0, 0, GFP_KERNEL);
 	if (subsys->id < 0) {
@@ -1783,8 +1763,17 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 
 	mutex_init(&subsys->track.lock);
 
+	ret = subsys_debugfs_add(subsys);
+	if (ret) {
+		ida_simple_remove(&subsys_ida, subsys->id);
+		wakeup_source_trash(&subsys->ssr_wlock);
+		kfree(subsys);
+		return ERR_PTR(ret);
+	}
+
 	ret = device_register(&subsys->dev);
 	if (ret) {
+		subsys_debugfs_remove(subsys);
 		put_device(&subsys->dev);
 		return ERR_PTR(ret);
 	}
@@ -1845,6 +1834,7 @@ err_setup_irqs:
 	if (ofnode)
 		subsys_remove_restart_order(ofnode);
 err_register:
+	subsys_debugfs_remove(subsys);
 	device_unregister(&subsys->dev);
 	return ERR_PTR(ret);
 }
@@ -1873,6 +1863,7 @@ void subsys_unregister(struct subsys_device *subsys)
 		WARN_ON(subsys->count);
 		device_unregister(&subsys->dev);
 		mutex_unlock(&subsys->track.lock);
+		subsys_debugfs_remove(subsys);
 		subsys_char_device_remove(subsys);
 		sysmon_notifier_unregister(subsys->desc);
 		if (subsys->desc->edge)
@@ -1906,13 +1897,15 @@ static int __init subsys_restart_init(void)
 {
 	int ret;
 
-	ssr_wq = alloc_workqueue("ssr_wq",
-		WQ_UNBOUND | WQ_HIGHPRI | WQ_CPU_INTENSIVE, 0);
+	ssr_wq = alloc_workqueue("ssr_wq", WQ_CPU_INTENSIVE, 0);
 	BUG_ON(!ssr_wq);
 
 	ret = bus_register(&subsys_bus_type);
 	if (ret)
 		goto err_bus;
+	ret = subsys_debugfs_init();
+	if (ret)
+		goto err_debugfs;
 
 	char_class = class_create(THIS_MODULE, "subsys");
 	if (IS_ERR(char_class)) {
@@ -1931,6 +1924,8 @@ static int __init subsys_restart_init(void)
 err_soc:
 	class_destroy(char_class);
 err_class:
+	subsys_debugfs_exit();
+err_debugfs:
 	bus_unregister(&subsys_bus_type);
 err_bus:
 	destroy_workqueue(ssr_wq);

@@ -99,6 +99,7 @@ int icm20602_bulk_read(struct inv_icm20602_state *st,
 {
 	int result = MPU_SUCCESS;
 	char tx_buf[2] = {0x0, 0x0};
+	int tmp_size = size;
 	u8 *tmp_buf = buf;
 	struct i2c_msg msg[2];
 
@@ -224,7 +225,7 @@ int icm20602_read_raw(struct inv_icm20602_state *st,
 {
 	struct struct_icm20602_raw_data raw_data;
 
-	if ((type & ACCEL) != 0) {
+	if (type & ACCEL != 0) {
 		icm20602_read_reg(st,
 			reg_set_20602.ACCEL_XOUT_H.address,
 			&raw_data.ACCEL_XOUT_H);
@@ -256,7 +257,7 @@ int icm20602_read_raw(struct inv_icm20602_state *st,
 			raw_data.ACCEL_ZOUT_L);
 	}
 
-	if ((type & GYRO) != 0) {
+	if (type & GYRO != 0) {
 		icm20602_read_reg(st,
 			reg_set_20602.GYRO_XOUT_H.address,
 			&raw_data.GYRO_XOUT_H);
@@ -326,7 +327,7 @@ int icm20602_start_fifo(struct inv_icm20602_state *st)
 	return MPU_SUCCESS;
 }
 
-int icm20602_stop_fifo(struct inv_icm20602_state *st)
+static int icm20602_stop_fifo(struct inv_icm20602_state *st)
 {
 	struct icm20602_user_config *config = NULL;
 
@@ -432,7 +433,11 @@ static int icm20602_read_ST_code(struct inv_icm20602_state *st)
 
 static int icm20602_set_self_test(struct inv_icm20602_state *st)
 {
+	uint8_t raw_data[6] = {0, 0, 0, 0, 0, 0};
+	uint8_t selfTest[6];
+	float factory_trim[6];
 	int result = 0;
+	int ii;
 
 	reg_set_20602.SMPLRT_DIV.reg_u.REG.SMPLRT_DIV = 0;
 	result |= icm20602_write_reg_simple(st, reg_set_20602.SMPLRT_DIV);
@@ -451,7 +456,7 @@ static int icm20602_set_self_test(struct inv_icm20602_state *st)
 	reg_set_20602.ACCEL_CONFIG.reg_u.REG.ACCEL_FS_SEL = ICM20602_ACC_FSR_2G;
 	result |= icm20602_write_reg_simple(st, reg_set_20602.ACCEL_CONFIG);
 
-	icm20602_read_ST_code(st);
+	//icm20602_read_ST_code(st);
 
 	return 0;
 }
@@ -461,7 +466,8 @@ static int icm20602_do_test_acc(struct inv_icm20602_state *st,
 {
 	struct struct_icm20602_real_data *real_data =
 		kmalloc(sizeof(struct inv_icm20602_state), GFP_ATOMIC);
-	int i;
+	struct icm20602_user_config *config = st->config;
+	int i, j;
 
 	for (i = 0; i < SELFTEST_COUNT; i++) {
 		icm20602_read_raw(st, real_data, ACCEL);
@@ -508,7 +514,7 @@ static int icm20602_do_test_gyro(struct inv_icm20602_state *st,
 {
 	struct struct_icm20602_real_data *real_data =
 		kmalloc(sizeof(struct inv_icm20602_state), GFP_ATOMIC);
-	int i;
+	int i, j;
 
 	for (i = 0; i < SELFTEST_COUNT; i++) {
 		icm20602_read_raw(st, real_data, GYRO);
@@ -564,7 +570,7 @@ static bool icm20602_check_acc_selftest(struct inv_icm20602_state *st,
 	st_otp.Y = (st_otp.Y != 0) ? mpu_st_tb[acc_ST_code.Y - 1] : 0;
 	st_otp.Z = (st_otp.Z != 0) ? mpu_st_tb[acc_ST_code.Z - 1] : 0;
 
-	if ((st_otp.X & st_otp.Y & st_otp.Z) == 0)
+	if (st_otp.X & st_otp.Y & st_otp.Z == 0)
 		otp_value_zero = true;
 
 	st_shift_cust.X = acc_st->X - acc->X;
@@ -621,11 +627,11 @@ static int icm20602_check_gyro_selftest(struct inv_icm20602_state *st,
 	gyro_ST_code.Y = st->config->gyro_self_test.Y;
 	gyro_ST_code.Z = st->config->gyro_self_test.Z;
 
-	st_otp.X = (gyro_ST_code.X != 0) ? mpu_st_tb[gyro_ST_code.X - 1] : 0;
-	st_otp.Y = (gyro_ST_code.Y != 0) ? mpu_st_tb[gyro_ST_code.Y - 1] : 0;
-	st_otp.Z = (gyro_ST_code.Z != 0) ? mpu_st_tb[gyro_ST_code.Z - 1] : 0;
+	st_otp.X = (st_otp.X != 0) ? mpu_st_tb[gyro_ST_code.X - 1] : 0;
+	st_otp.Y = (st_otp.Y != 0) ? mpu_st_tb[gyro_ST_code.Y - 1] : 0;
+	st_otp.Z = (st_otp.Z != 0) ? mpu_st_tb[gyro_ST_code.Z - 1] : 0;
 
-	if ((st_otp.X & st_otp.Y & st_otp.Z) == 0)
+	if (st_otp.X & st_otp.Y & st_otp.Z == 0)
 		otp_value_zero = true;
 
 	st_shift_cust.X = gyro_st->X - gyro->X;
@@ -735,6 +741,8 @@ static int icm20602_initialize_gyro(struct inv_icm20602_state *st)
 {
 	struct icm20602_user_config *config = NULL;
 	int result = MPU_SUCCESS;
+	int sample_rate;
+	uint8_t fchoice_b;
 
 	if (st == NULL)
 		return -MPU_FAIL;
@@ -920,6 +928,7 @@ int icm20602_detect(struct inv_icm20602_state *st)
 {
 	int result = MPU_SUCCESS;
 	uint8_t retry = 0, val = 0;
+	uint8_t usr_ctrl = 0;
 
 	pr_debug("icm20602_detect\n");
 	/* reset to make sure previous state are not there */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1118,8 +1118,6 @@ static int __set_clocks(struct venus_hfi_device *device, u32 freq)
 	int rc = 0;
 
 	venus_hfi_for_each_clock(device, cl) {
-		if (cl->disable_memcore_only)
-			continue;
 		if (cl->has_scaling) {/* has_scaling */
 			device->clk_freq = freq;
 			rc = clk_set_rate(cl->clk, freq);
@@ -2093,7 +2091,6 @@ static int venus_hfi_session_init(void *device, void *session_id,
 		void **new_session)
 {
 	struct hfi_cmd_sys_session_init_packet pkt;
-	struct hfi_cmd_sys_set_property_packet feature_pkt;
 	struct venus_hfi_device *dev;
 	struct hal_session *s;
 
@@ -2123,22 +2120,6 @@ static int venus_hfi_session_init(void *device, void *session_id,
 	list_add_tail(&s->list, &dev->sess_head);
 
 	__set_default_sys_properties(device);
-	if (dev->res) {
-		if (dev->res->enable_max_resolution) {
-			if (call_hfi_pkt_op(dev, sys_feature_config,
-				&feature_pkt)) {
-				dprintk(VIDC_ERR,
-					"Failed to create feature config pkt\n");
-				goto err_session_init_fail;
-			}
-
-			if (__iface_cmdq_write(dev, &feature_pkt)) {
-				dprintk(VIDC_WARN,
-					"Failed to set max resolutionfeature in f/w\n");
-				goto err_session_init_fail;
-			}
-		}
-	}
 
 	if (call_hfi_pkt_op(dev, session_init, &pkt,
 			s, session_type, codec_type)) {
@@ -2910,22 +2891,23 @@ static int __halt_axi(struct venus_hfi_device *device)
 	return rc;
 }
 
-static void print_sfr_message(struct venus_hfi_device *device)
+static void __process_sys_error(struct venus_hfi_device *device)
 {
 	struct hfi_sfr_struct *vsfr = NULL;
-	u32 vsfr_size = 0;
-	void *p = NULL;
 
 	if (__halt_axi(device))
 		dprintk(VIDC_WARN, "Failed to halt AXI after SYS_ERROR\n");
 
 	vsfr = (struct hfi_sfr_struct *)device->sfr.align_virtual_addr;
 	if (vsfr) {
-		vsfr_size = vsfr->bufSize - sizeof(u32);
-		p = memchr(vsfr->rg_data, '\0', vsfr_size);
-		/* SFR isn't guaranteed to be NULL terminated */
+		void *p = memchr(vsfr->rg_data, '\0', vsfr->bufSize);
+		/*
+		 * SFR isn't guaranteed to be NULL terminated
+		 * since SYS_ERROR indicates that Venus is in the
+		 * process of crashing.
+		 */
 		if (p == NULL)
-			vsfr->rg_data[vsfr_size - 1] = '\0';
+			vsfr->rg_data[vsfr->bufSize - 1] = '\0';
 
 		dprintk(VIDC_ERR, "SFR Message from FW: %s\n",
 				vsfr->rg_data);
@@ -3067,6 +3049,8 @@ static int __response_handler(struct venus_hfi_device *device)
 	}
 
 	if (device->intr_status & VIDC_WRAPPER_INTR_CLEAR_A2HWD_BMSK) {
+		struct hfi_sfr_struct *vsfr = (struct hfi_sfr_struct *)
+			device->sfr.align_virtual_addr;
 		struct msm_vidc_cb_info info = {
 			.response_type = HAL_SYS_WATCHDOG_TIMEOUT,
 			.response.cmd = {
@@ -3074,7 +3058,9 @@ static int __response_handler(struct venus_hfi_device *device)
 			}
 		};
 
-		print_sfr_message(device);
+		if (vsfr)
+			dprintk(VIDC_ERR, "SFR Message from FW: %s\n",
+					vsfr->rg_data);
 
 		dprintk(VIDC_ERR, "Received watchdog timeout\n");
 		packets[packet_count++] = info;
@@ -3100,7 +3086,7 @@ static int __response_handler(struct venus_hfi_device *device)
 		/* Process the packet types that we're interested in */
 		switch (info->response_type) {
 		case HAL_SYS_ERROR:
-			print_sfr_message(device);
+			__process_sys_error(device);
 			break;
 		case HAL_SYS_RELEASE_RESOURCE_DONE:
 			dprintk(VIDC_DBG, "Received SYS_RELEASE_RESOURCE\n");
@@ -3264,10 +3250,12 @@ err_no_work:
 
 		if (!__core_in_valid_state(device)) {
 			dprintk(VIDC_ERR,
-				"Ignore responses from %d to %d as device is in invalid state\n",
+				"Ignore responses from %d to %d as device is in invalid state",
 				(i + 1), num_responses);
 			break;
 		}
+		dprintk(VIDC_DBG, "Processing response %d of %d, type %d\n",
+			(i + 1), num_responses, r->response_type);
 		device->callback(r->response_type, &r->response);
 	}
 
@@ -3413,8 +3401,6 @@ static inline void __disable_unprepare_clks(struct venus_hfi_device *device)
 	}
 
 	venus_hfi_for_each_clock_reverse(device, cl) {
-		if (cl->disable_memcore_only)
-			continue;
 		dprintk(VIDC_DBG, "Clock: %s disable and unprepare\n",
 				cl->name);
 		rc = clk_set_flags(cl->clk, CLKFLAG_NORETAIN_PERIPH);
@@ -3444,11 +3430,6 @@ static inline int __prepare_enable_clks(struct venus_hfi_device *device)
 	}
 
 	venus_hfi_for_each_clock(device, cl) {
-		/* MEM CORE is ON by default. Unset it for unused clocks*/
-		if (cl->disable_memcore_only) {
-			clk_set_flags(cl->clk, CLKFLAG_NORETAIN_MEM);
-			continue;
-		}
 		/*
 		 * For the clocks we control, set the rate prior to preparing
 		 * them.  Since we don't really have a load at this point, scale
@@ -3486,8 +3467,6 @@ static inline int __prepare_enable_clks(struct venus_hfi_device *device)
 
 fail_clk_enable:
 	venus_hfi_for_each_clock_reverse_continue(device, cl, c) {
-		if (cl->disable_memcore_only)
-			continue;
 		dprintk(VIDC_ERR, "Clock: %s disable and unprepare\n",
 			cl->name);
 		clk_disable_unprepare(cl->clk);
@@ -3581,6 +3560,7 @@ static int __init_bus(struct venus_hfi_device *device)
 		devfreq_suspend_device(bus->devfreq);
 	}
 
+	device->bus_vote = DEFAULT_BUS_VOTE;
 	return 0;
 
 err_add_dev:

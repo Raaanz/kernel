@@ -16,9 +16,6 @@ config DEFCONFIG_LIST
 	default "$ARCH_DEFCONFIG"
 	default "arch/$ARCH/defconfig"
 
-config TOOLS_SUPPORT_RELR
-	bool "Declare tool support for RELR"
-
 config CONSTRUCTORS
 	bool
 	depends on !UML
@@ -863,19 +860,9 @@ config IKCONFIG_PROC
 	  This option enables access to the kernel configuration file
 	  through /proc/config.gz.
 
-config IKHEADERS
-	tristate "Enable kernel headers through /sys/kernel/kheaders.tar.xz"
-	depends on SYSFS
-	help
-	  This option enables access to the in-kernel headers that are generated during
-	  the build process. These can be used to build eBPF tracing programs,
-	  or similar programs.  If you build the headers as a module, a module called
-	  kheaders.ko is built which can be loaded on-demand to get access to headers.
-
 config LOG_BUF_SHIFT
 	int "Kernel log buffer size (16 => 64KB, 17 => 128KB)"
-	range 12 25 if !H8300
-	range 12 19 if H8300
+	range 12 25
 	default 17
 	depends on PRINTK
 	help
@@ -1192,7 +1179,6 @@ config FAIR_GROUP_SCHED
 config CFS_BANDWIDTH
 	bool "CPU bandwidth provisioning for FAIR_GROUP_SCHED"
 	depends on FAIR_GROUP_SCHED
-	depends on !SCHED_WALT
 	default n
 	help
 	  This option allows users to define CPU bandwidth rates (limits) for
@@ -1411,6 +1397,14 @@ config NET_NS
 	  Allow user space to create what appear to be multiple instances
 	  of the network stack.
 
+config DRV_NS
+	bool "drivers namespace"
+	depends on PID_NS
+	default n
+	help
+	  Allow user space to create what appear to be multiple instances
+	  of the drivers stack.
+
 endif # NAMESPACES
 
 config SCHED_AUTOGROUP
@@ -1451,71 +1445,6 @@ config SCHED_TUNE
 	  boost value is applied to all (CFS) tasks in the system.
 
 	  If unsure, say N.
-
-config STUNE_ASSIST
-	bool "SchedTune configuration helper"
-	depends on SCHED_TUNE
-	depends on ANDROID
-	help
-	  This option enables in-kernel overrides for SchedTune values.
-
-	  If unsure, say N.
-
-config CPUSET_ASSIST
-	bool "Cpuset configuration helper"
-	depends on CPUSETS
-	depends on ANDROID
-	help
-	  This option enables the configuration of default cpusets
-	  parameters from kernel.
-
-	  If unsure, say N.
-
-if CPUSET_ASSIST
-
-config CPUSET_AUDIO_APP
-	string "Value for 'audio-app' cpuset"
-	default "0-3"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_BG
-	string "Value for 'background' cpuset"
-	default "0-1"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_CAMERA
-	string "Value for 'camera-daemon' cpuset"
-	default "0-3,6-7"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_FG
-	string "Value for 'foreground' cpuset"
-	default "0-3,6-7"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_RESTRICTED
-	string "Value for 'restricted' cpuset"
-	default "0-3"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_SYSTEM_BG
-	string "Value for 'system-background' cpuset"
-	default "0-3"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-config CPUSET_TOP_APP
-	string "Value for 'top-app' cpuset"
-	default "0-7"
-	help
-	  The CPU mask to use for the audio-app cpuset.
-
-endif
 
 config DEFAULT_USE_ENERGY_AWARE
 	bool "Default to enabling the Energy Aware Scheduler feature"

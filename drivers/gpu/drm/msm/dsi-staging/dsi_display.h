@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2015-2018, The Linux Foundation.All rights reserved.
- * Copyright (C) 2019 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -167,6 +166,7 @@ struct dsi_display_clk_info {
  * @misr_enable       Frame MISR enable/disable
  * @misr_frame_count  Number of frames to accumulate the MISR value
  * @esd_trigger       field indicating ESD trigger through debugfs
+ * @esd_irq_work:     work object to perform panel recovery for ESD IRQ mode
  */
 struct dsi_display {
 	struct platform_device *pdev;
@@ -174,8 +174,6 @@ struct dsi_display {
 	struct drm_connector *drm_conn;
 
 	const char *name;
-	bool is_prim_display;
-	bool is_first_boot;
 	const char *display_type;
 	struct list_head list;
 	bool is_active;
@@ -191,6 +189,7 @@ struct dsi_display {
 	/* panel info */
 	struct dsi_panel *panel;
 	struct device_node *panel_of;
+	struct device *panel_info_dev;
 
 	struct dsi_display_mode *modes;
 
@@ -240,6 +239,9 @@ struct dsi_display {
 	struct work_struct fifo_underflow_work;
 	struct work_struct fifo_overflow_work;
 	struct work_struct lp_rx_timeout_work;
+
+	/* panel recovery */
+	struct work_struct esd_irq_work;
 };
 
 /**
@@ -401,14 +403,13 @@ int dsi_display_validate_mode(struct dsi_display *display,
 			      u32 flags);
 
 /**
- * dsi_display_validate_mode_change() - validates mode if variable refresh case
- *				or dynamic clk change case
+ * dsi_display_validate_mode_vrr() - validates mode if variable refresh case
  * @display:             Handle to display.
  * @mode:                Mode to be validated..
  *
  * Return: 0 if  error code.
  */
-int dsi_display_validate_mode_change(struct dsi_display *display,
+int dsi_display_validate_mode_vrr(struct dsi_display *display,
 			struct dsi_display_mode *cur_dsi_mode,
 			struct dsi_display_mode *mode);
 
@@ -589,8 +590,6 @@ void dsi_display_enable_event(struct dsi_display *display,
 
 int dsi_display_set_backlight(void *display, u32 bl_lvl);
 
-int dsi_panel_set_doze_backlight(struct dsi_display *display, u32 bl_lvl);
-
 /**
  * dsi_display_check_status() - check if panel is dead or alive
  * @display:            Handle to display.
@@ -670,5 +669,13 @@ int dsi_display_cont_splash_config(void *display);
  */
 int dsi_display_get_panel_vfp(void *display,
 	int h_active, int v_active);
+
+/**
+ * dsi_display_get_esd_mode() - get ESD mode from DSI display
+ * @display: Handle to display
+ *
+ * Return: ESD mode or error code
+ */
+int dsi_display_get_esd_mode(void *display);
 
 #endif /* _DSI_DISPLAY_H_ */

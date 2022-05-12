@@ -19,6 +19,7 @@
 
 #include <linux/device.h>
 #include <linux/delay.h>
+#include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kthread.h>
 #include <linux/wait.h>
@@ -52,6 +53,7 @@ static DEFINE_MUTEX(deferred_probe_mutex);
 static LIST_HEAD(deferred_probe_pending_list);
 static LIST_HEAD(deferred_probe_active_list);
 static atomic_t deferred_trigger_count = ATOMIC_INIT(0);
+static bool initcalls_done;
 
 /*
  * In some cases, like suspend to RAM or hibernation, It might be reasonable
@@ -59,6 +61,26 @@ static atomic_t deferred_trigger_count = ATOMIC_INIT(0);
  * Once defer_all_probes is true all drivers probes will be forcibly deferred.
  */
 static bool defer_all_probes;
+
+/*
+ * For initcall_debug, show the deferred probes executed in late_initcall
+ * processing.
+ */
+static void deferred_probe_debug(struct device *dev)
+{
+	ktime_t calltime, delta, rettime;
+	unsigned long long duration;
+
+	printk(KERN_DEBUG "deferred probe %s @ %i\n", dev_name(dev),
+	       task_pid_nr(current));
+	calltime = ktime_get();
+	bus_probe_device(dev);
+	rettime = ktime_get();
+	delta = ktime_sub(rettime, calltime);
+	duration = (unsigned long long) ktime_to_ns(delta) >> 10;
+	printk(KERN_DEBUG "deferred probe %s returned after %lld usecs\n",
+	       dev_name(dev), duration);
+}
 
 /*
  * deferred_probe_work_func() - Retry probing devices in the active list.
@@ -105,7 +127,10 @@ static void deferred_probe_work_func(struct work_struct *work)
 		device_pm_unlock();
 
 		dev_dbg(dev, "Retrying from deferred list\n");
-		bus_probe_device(dev);
+		if (initcall_debug && !initcalls_done)
+			deferred_probe_debug(dev);
+		else
+			bus_probe_device(dev);
 
 		mutex_lock(&deferred_probe_mutex);
 
@@ -224,6 +249,7 @@ static int deferred_probe_initcall(void)
 {
 	enable_trigger_defer_cycle();
 	driver_deferred_probe_enable = false;
+	initcalls_done = true;
 	return 0;
 }
 arch_initcall_sync(deferred_probe_initcall);
@@ -362,11 +388,7 @@ static int really_probe(struct device *dev, struct device_driver *drv)
 	atomic_inc(&probe_count);
 	pr_debug("bus: '%s': %s: probing driver %s with device %s\n",
 		 drv->bus->name, __func__, drv->name, dev_name(dev));
-	if (!list_empty(&dev->devres_head)) {
-		dev_crit(dev, "Resources present before probing\n");
-		ret = -EBUSY;
-		goto done;
-	}
+	WARN_ON(!list_empty(&dev->devres_head));
 
 re_probe:
 	dev->driver = drv;
@@ -468,7 +490,7 @@ pinctrl_bind_failed:
 	ret = 0;
 done:
 	atomic_dec(&probe_count);
-	wake_up_all(&probe_waitqueue);
+	wake_up(&probe_waitqueue);
 	return ret;
 }
 
@@ -758,13 +780,13 @@ static int __driver_attach(struct device *dev, void *data)
 		return ret;
 	} /* ret > 0 means positive match */
 
-	if (dev->parent)	/* Needed for USB */
+	if (dev->parent && dev->bus->need_parent_lock)
 		device_lock(dev->parent);
 	device_lock(dev);
 	if (!dev->driver)
 		driver_probe_device(drv, dev);
 	device_unlock(dev);
-	if (dev->parent)
+	if (dev->parent && dev->bus->need_parent_lock)
 		device_unlock(dev->parent);
 
 	return 0;
@@ -871,13 +893,13 @@ void driver_detach(struct device_driver *drv)
 		get_device(dev);
 		spin_unlock(&drv->p->klist_devices.k_lock);
 
-		if (dev->parent)	/* Needed for USB */
+		if (dev->parent && dev->bus->need_parent_lock)
 			device_lock(dev->parent);
 		device_lock(dev);
 		if (dev->driver == drv)
 			__device_release_driver(dev);
 		device_unlock(dev);
-		if (dev->parent)
+		if (dev->parent && dev->bus->need_parent_lock)
 			device_unlock(dev->parent);
 		put_device(dev);
 	}

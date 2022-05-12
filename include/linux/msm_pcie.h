@@ -21,6 +21,7 @@ enum msm_pcie_config {
 	MSM_PCIE_CONFIG_NO_CFG_RESTORE = 0x1,
 	MSM_PCIE_CONFIG_LINKDOWN = 0x2,
 	MSM_PCIE_CONFIG_NO_RECOVERY = 0x4,
+	MSM_PCIE_CONFIG_NO_CFG_FREE = 0x8,
 };
 
 enum msm_pcie_pm_opt {
@@ -157,6 +158,7 @@ int msm_pcie_shadow_control(struct pci_dev *dev, bool enable);
 int msm_pcie_debug_info(struct pci_dev *dev, u32 option, u32 base,
 			u32 offset, u32 mask, u32 value);
 
+int msm_pcie_set_reset(u32 rc_idx, bool enable);
 #else /* !CONFIG_PCI_MSM */
 static inline int msm_pcie_pm_control(enum msm_pcie_pm_opt pm_opt, u32 busnr,
 			void *user, void *data, u32 options)

@@ -28,23 +28,18 @@ if test $# -gt 0 -o ! -d "$srctree"; then
 	usage
 fi
 
-scm_version()
+_scm_version()
 {
 	local short
 	short=false
 
-	cd "$srctree"
-	if test -e .scmversion; then
-		cat .scmversion
-		return
-	fi
 	if test "$1" = "--short"; then
 		short=true
 	fi
 
 	# Check for git and a git repo.
 	if test -z "$(git rev-parse --show-cdup 2>/dev/null)" &&
-	   head=$(git rev-parse --verify HEAD 2>/dev/null); then
+	   head=`git rev-parse --verify --short HEAD 2>/dev/null`; then
 
 		# If we are at a tagged commit (like "v2.6.30-rc6"), we ignore
 		# it, because this version is defined in the top level Makefile.
@@ -58,22 +53,11 @@ scm_version()
 			fi
 			# If we are past a tagged commit (like
 			# "v2.6.30-rc5-302-g72357d5"), we pretty print it.
-			#
-			# Ensure the abbreviated sha1 has exactly 12
-			# hex characters, to make the output
-			# independent of git version, local
-			# core.abbrev settings and/or total number of
-			# objects in the current repository - passing
-			# --abbrev=12 ensures a minimum of 12, and the
-			# awk substr() then picks the 'g' and first 12
-			# hex chars.
-			if atag="$(git describe --abbrev=12 2>/dev/null)"; then
-				echo "$atag" | awk -F- '{printf("-%05d-%s", $(NF-1),substr($(NF),0,13))}'
+			if atag="`git describe 2>/dev/null`"; then
+				echo "$atag" | awk -F- '{printf("-%05d-%s", $(NF-1),$(NF))}'
 
-			# If we don't have a tag at all we print -g{commitish},
-			# again using exactly 8 hex chars.
+			# If we don't have a tag at all we print -g{commitish}.
 			else
-				head="$(echo $head | cut -c1-8)"
 				printf '%s%s' -g $head
 			fi
 		fi
@@ -134,6 +118,33 @@ scm_version()
 	fi
 }
 
+scm_version()
+{
+	local git_path res git_all_proj name
+	cd "$srctree"
+	if test -e .scmversion; then
+		cat .scmversion
+		return
+	fi
+	git_all_proj=$(find . -name .git -type d | sort)
+	if [ ! -z "$git_all_proj" ] ; then
+		res=""
+		for git_path in $git_all_proj; do
+			git_path=${git_path%.git}
+			name=$(basename ${git_path})
+			if [ $name = "." ] ; then
+				name=""
+			else
+				name="_$name"
+			fi
+			res="$res$name$(cd $git_path;_scm_version)"
+		done
+		printf -- '%s' "$res"
+	else
+		_scm_version
+	fi
+}
+
 collect_files()
 {
 	local file res
@@ -186,6 +197,7 @@ else
 	# LOCALVERSION= is not specified
 	if test "${LOCALVERSION+set}" != "set"; then
 		scm=$(scm_version --short)
+		res="$res${scm:++}"
 	fi
 fi
 

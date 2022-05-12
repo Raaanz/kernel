@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -121,10 +121,7 @@ static ssize_t debugfs_state_info_read(struct file *file,
 			dsi_ctrl->clk_freq.pix_clk_rate,
 			dsi_ctrl->clk_freq.esc_clk_rate);
 
-	if (len > count)
-		len = count;
-
-	len = min_t(size_t, len, SZ_4K);
+	/* TODO: make sure that this does not exceed 4K */
 	if (copy_to_user(buff, buf, len)) {
 		kfree(buf);
 		return -EFAULT;
@@ -179,10 +176,8 @@ static ssize_t debugfs_reg_dump_read(struct file *file,
 		return rc;
 	}
 
-	if (len > count)
-		len = count;
 
-	len = min_t(size_t, len, SZ_4K);
+	/* TODO: make sure that this does not exceed 4K */
 	if (copy_to_user(buff, buf, len)) {
 		kfree(buf);
 		return -EFAULT;
@@ -248,8 +243,6 @@ static int dsi_ctrl_debugfs_init(struct dsi_ctrl *dsi_ctrl,
 						dsi_ctrl->cell_index);
 	sde_dbg_reg_register_base(dbg_name, dsi_ctrl->hw.base,
 				msm_iomap_size(dsi_ctrl->pdev, "dsi_ctrl"));
-	sde_dbg_reg_register_dump_range(dbg_name, dbg_name, 0,
-				msm_iomap_size(dsi_ctrl->pdev, "dsi_ctrl"), 0);
 error_remove_dir:
 	debugfs_remove(dir);
 error:
@@ -278,8 +271,6 @@ static int dsi_ctrl_check_state(struct dsi_ctrl *dsi_ctrl,
 {
 	int rc = 0;
 	struct dsi_ctrl_state_info *state = &dsi_ctrl->current_state;
-
-	SDE_EVT32(dsi_ctrl->cell_index, op);
 
 	switch (op) {
 	case DSI_CTRL_OP_POWER_STATE_CHANGE:
@@ -896,7 +887,6 @@ static int dsi_ctrl_copy_and_pad_cmd(struct dsi_ctrl *dsi_ctrl,
 	int rc = 0;
 	u8 *buf = NULL;
 	u32 len, i;
-	u8 cmd_type = 0;
 
 	len = packet->size;
 	len += 0x3; len &= ~0x03; /* Align to 32 bits */
@@ -919,11 +909,7 @@ static int dsi_ctrl_copy_and_pad_cmd(struct dsi_ctrl *dsi_ctrl,
 
 
 	/* send embedded BTA for read commands */
-	cmd_type = buf[2] & 0x3f;
-	if ((cmd_type == MIPI_DSI_DCS_READ) ||
-	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_0_PARAM) ||
-	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_1_PARAM) ||
-	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_2_PARAM))
+	if ((buf[2] & 0x3f) == MIPI_DSI_DCS_READ)
 		buf[3] |= BIT(5);
 
 	*buffer = buf;
@@ -1249,10 +1235,9 @@ kickoff:
 			}
 		}
 
-		if (dsi_ctrl->hw.ops.mask_error_intr &&
-		    !dsi_ctrl->esd_check_underway)
+		if (dsi_ctrl->hw.ops.mask_error_intr)
 			dsi_ctrl->hw.ops.mask_error_intr(&dsi_ctrl->hw,
-						BIT(DSI_FIFO_OVERFLOW), false);
+					BIT(DSI_FIFO_OVERFLOW), false);
 		dsi_ctrl->hw.ops.reset_cmd_fifo(&dsi_ctrl->hw);
 
 		/*
@@ -1283,7 +1268,6 @@ static int dsi_set_max_return_size(struct dsi_ctrl *dsi_ctrl,
 		.type = MIPI_DSI_SET_MAXIMUM_RETURN_PACKET_SIZE,
 		.tx_len = 2,
 		.tx_buf = tx,
-		.flags = rx_msg->flags,
 	};
 
 	rc = dsi_message_tx(dsi_ctrl, &msg, flags);
@@ -1850,19 +1834,15 @@ static struct platform_driver dsi_ctrl_driver = {
 	.driver = {
 		.name = "drm_dsi_ctrl",
 		.of_match_table = msm_dsi_of_match,
-		.suppress_bind_attrs = true,
 	},
 };
 
-#if 0
+#if defined(CONFIG_DEBUG_FS)
 
-void dsi_ctrl_debug_dump(u32 *entries, u32 size)
+void dsi_ctrl_debug_dump(void)
 {
 	struct list_head *pos, *tmp;
 	struct dsi_ctrl *ctrl = NULL;
-
-	if (!entries || !size)
-		return;
 
 	mutex_lock(&dsi_ctrl_list_lock);
 	list_for_each_safe(pos, tmp, &dsi_ctrl_list) {
@@ -1871,7 +1851,7 @@ void dsi_ctrl_debug_dump(u32 *entries, u32 size)
 		n = list_entry(pos, struct dsi_ctrl_list_item, list);
 		ctrl = n->ctrl;
 		pr_err("dsi ctrl:%d\n", ctrl->cell_index);
-		ctrl->hw.ops.debug_bus(&ctrl->hw, entries, size);
+		ctrl->hw.ops.debug_bus(&ctrl->hw);
 	}
 	mutex_unlock(&dsi_ctrl_list_lock);
 }
@@ -2655,16 +2635,6 @@ void dsi_ctrl_isr_configure(struct dsi_ctrl *dsi_ctrl, bool enable)
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 }
 
-void dsi_ctrl_set_continuous_clk(struct dsi_ctrl *dsi_ctrl, bool enable)
-{
-	if (!dsi_ctrl)
-		return;
-
-	mutex_lock(&dsi_ctrl->ctrl_lock);
-	dsi_ctrl->hw.ops.set_continuous_clk(&dsi_ctrl->hw, enable);
-	mutex_unlock(&dsi_ctrl->ctrl_lock);
-}
-
 int dsi_ctrl_soft_reset(struct dsi_ctrl *dsi_ctrl)
 {
 	if (!dsi_ctrl)
@@ -2787,12 +2757,7 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 		goto error;
 	}
 
-	if (!(flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
-		       DSI_MODE_FLAG_DYN_CLK))) {
-		/*
-		 * for dynamic clk swith case link frequence would
-		 * be updated dsi_display_dynamic_clk_switch().
-		 */
+	if (!(flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR))) {
 		rc = dsi_ctrl_update_link_freqs(ctrl, config, clk_handle);
 		if (rc) {
 			pr_err("[%s] failed to update link frequencies, rc=%d\n",
@@ -2875,8 +2840,10 @@ int dsi_ctrl_cmd_transfer(struct dsi_ctrl *dsi_ctrl,
 
 	if (flags & DSI_CTRL_CMD_READ) {
 		rc = dsi_message_rx(dsi_ctrl, msg, flags);
-		if (rc <= 0)
-			pr_err("read message failed read length, rc=%d\n", rc);
+		if (rc < 0)
+			pr_err("read message failed read, rc=%d\n", rc);
+		else if (rc == 0)
+			pr_warn("empty message back\n");
 	} else {
 		rc = dsi_message_tx(dsi_ctrl, msg, flags);
 		if (rc)
@@ -2955,8 +2922,7 @@ int dsi_ctrl_cmd_tx_trigger(struct dsi_ctrl *dsi_ctrl, u32 flags)
 						dsi_ctrl->cell_index);
 			}
 		}
-		if (dsi_ctrl->hw.ops.mask_error_intr &&
-				!dsi_ctrl->esd_check_underway)
+		if (dsi_ctrl->hw.ops.mask_error_intr)
 			dsi_ctrl->hw.ops.mask_error_intr(&dsi_ctrl->hw,
 					BIT(DSI_FIFO_OVERFLOW), false);
 
@@ -3454,8 +3420,7 @@ u32 dsi_ctrl_collect_misr(struct dsi_ctrl *dsi_ctrl)
 	return misr;
 }
 
-void dsi_ctrl_mask_error_status_interrupts(struct dsi_ctrl *dsi_ctrl, u32 idx,
-		bool mask_enable)
+void dsi_ctrl_mask_error_status_interrupts(struct dsi_ctrl *dsi_ctrl)
 {
 	if (!dsi_ctrl || !dsi_ctrl->hw.ops.error_intr_ctrl
 			|| !dsi_ctrl->hw.ops.clear_error_status) {
@@ -3468,23 +3433,9 @@ void dsi_ctrl_mask_error_status_interrupts(struct dsi_ctrl *dsi_ctrl, u32 idx,
 	 * register
 	 */
 	mutex_lock(&dsi_ctrl->ctrl_lock);
-	if (idx & BIT(DSI_ERR_INTR_ALL)) {
-		/*
-		 * The behavior of mask_enable is different in ctrl register
-		 * and mask register and hence mask_enable is manipulated for
-		 * selective error interrupt masking vs total error interrupt
-		 * masking.
-		 */
-
-		dsi_ctrl->hw.ops.error_intr_ctrl(&dsi_ctrl->hw, !mask_enable);
-		dsi_ctrl->hw.ops.clear_error_status(&dsi_ctrl->hw,
+	dsi_ctrl->hw.ops.error_intr_ctrl(&dsi_ctrl->hw, false);
+	dsi_ctrl->hw.ops.clear_error_status(&dsi_ctrl->hw,
 					DSI_ERROR_INTERRUPT_COUNT);
-	} else {
-		dsi_ctrl->hw.ops.mask_error_intr(&dsi_ctrl->hw, idx,
-								mask_enable);
-		dsi_ctrl->hw.ops.clear_error_status(&dsi_ctrl->hw,
-					DSI_ERROR_INTERRUPT_COUNT);
-	}
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 }
 
@@ -3508,27 +3459,6 @@ void dsi_ctrl_irq_update(struct dsi_ctrl *dsi_ctrl, bool enable)
 					DSI_SINT_ERROR);
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
-}
-
-/**
- * dsi_ctrl_wait4dynamic_refresh_done() - Poll for dynamci refresh
- *				done interrupt.
- * @dsi_ctrl:              DSI controller handle.
- */
-int dsi_ctrl_wait4dynamic_refresh_done(struct dsi_ctrl *ctrl)
-{
-	int rc = 0;
-
-	if (!ctrl)
-		return 0;
-
-	mutex_lock(&ctrl->ctrl_lock);
-
-	if (ctrl->hw.ops.wait4dynamic_refresh_done)
-		rc = ctrl->hw.ops.wait4dynamic_refresh_done(&ctrl->hw);
-
-	mutex_unlock(&ctrl->ctrl_lock);
-	return rc;
 }
 
 /**

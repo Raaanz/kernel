@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  * Copyright (C) 2006-2007 Adam Belay <abelay@novell.com>
  * Copyright (C) 2009 Intel Corporation
  *
@@ -26,7 +26,6 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <linux/tick.h>
-#include <linux/wakeup_reason.h>
 #include <linux/suspend.h>
 #include <linux/pm_qos.h>
 #include <linux/of_platform.h>
@@ -40,6 +39,7 @@
 #include <soc/qcom/event_timer.h>
 #include <soc/qcom/lpm_levels.h>
 #include <soc/qcom/lpm-stats.h>
+#include <soc/qcom/minidump.h>
 #include <asm/arch_timer.h>
 #include <asm/suspend.h>
 #include <asm/cpuidle.h>
@@ -58,7 +58,29 @@
 #define PSCI_AFFINITY_LEVEL(lvl) ((lvl & 0x3) << 24)
 #define BIAS_HYST (bias_hyst * NSEC_PER_MSEC)
 
-#define MAX_S2IDLE_CPU_ATTEMPTS  32   /* divide by # cpus for max suspends */
+enum {
+	MSM_LPM_LVL_DBG_SUSPEND_LIMITS = BIT(0),
+	MSM_LPM_LVL_DBG_IDLE_LIMITS = BIT(1),
+};
+
+enum debug_event {
+	CPU_ENTER,
+	CPU_EXIT,
+	CLUSTER_ENTER,
+	CLUSTER_EXIT,
+	CPU_HP_STARTING,
+	CPU_HP_DYING,
+};
+
+struct lpm_debug {
+	cycle_t time;
+	enum debug_event evt;
+	int cpu;
+	uint32_t arg1;
+	uint32_t arg2;
+	uint32_t arg3;
+	uint32_t arg4;
+};
 
 static struct system_pm_ops *sys_pm_ops;
 static DEFINE_SPINLOCK(bc_timer_lock);
@@ -89,10 +111,13 @@ static DEFINE_PER_CPU(struct lpm_cpu*, cpu_lpm);
 static bool suspend_in_progress;
 static struct hrtimer lpm_hrtimer;
 static DEFINE_PER_CPU(struct hrtimer, histtimer);
+static struct lpm_debug *lpm_debug;
+static phys_addr_t lpm_debug_phys;
+static const int num_dbg_elements = 0x100;
 
 static void cluster_unprepare(struct lpm_cluster *cluster,
 		const struct cpumask *cpu, int child_idx, bool from_idle,
-		int64_t time, bool success);
+		int64_t time);
 static void cluster_prepare(struct lpm_cluster *cluster,
 		const struct cpumask *cpu, int child_idx, bool from_idle,
 		int64_t time);
@@ -102,9 +127,6 @@ module_param_named(print_parsed_dt, print_parsed_dt, bool, 0664);
 
 static bool sleep_disabled;
 module_param_named(sleep_disabled, sleep_disabled, bool, 0664);
-
-static bool sleep_disabled_touch;
-module_param_named(sleep_disabled_touch, sleep_disabled_touch, bool, 0664);
 
 /**
  * msm_cpuidle_get_deep_idle_latency - Get deep idle latency value
@@ -127,13 +149,6 @@ uint32_t register_system_pm_ops(struct system_pm_ops *pm_ops)
 	return 0;
 }
 
-void lpm_disable_for_input(bool on)
-{
-	sleep_disabled_touch = !!on;
-	return;
-}
-EXPORT_SYMBOL(lpm_disable_for_input);
-
 static uint32_t least_cluster_latency(struct lpm_cluster *cluster,
 					struct latency_level *lat_level)
 {
@@ -144,7 +159,7 @@ static uint32_t least_cluster_latency(struct lpm_cluster *cluster,
 	uint32_t latency = 0;
 	int i;
 
-	if (list_empty(&cluster->list)) {
+	if (!cluster->list.next) {
 		for (i = 0; i < cluster->nlevels; i++) {
 			level = &cluster->levels[i];
 			pwr_params = &level->pwr;
@@ -270,10 +285,38 @@ int lpm_get_latency(struct latency_level *level, uint32_t *latency)
 }
 EXPORT_SYMBOL(lpm_get_latency);
 
+static void update_debug_pc_event(enum debug_event event, uint32_t arg1,
+		uint32_t arg2, uint32_t arg3, uint32_t arg4)
+{
+	struct lpm_debug *dbg;
+	int idx;
+	static DEFINE_SPINLOCK(debug_lock);
+	static int pc_event_index;
+
+	if (!lpm_debug)
+		return;
+
+	spin_lock(&debug_lock);
+	idx = pc_event_index++;
+	dbg = &lpm_debug[idx & (num_dbg_elements - 1)];
+
+	dbg->evt = event;
+	dbg->time = arch_counter_get_cntvct();
+	dbg->cpu = raw_smp_processor_id();
+	dbg->arg1 = arg1;
+	dbg->arg2 = arg2;
+	dbg->arg3 = arg3;
+	dbg->arg4 = arg4;
+	spin_unlock(&debug_lock);
+}
+
 static int lpm_dying_cpu(unsigned int cpu)
 {
 	struct lpm_cluster *cluster = per_cpu(cpu_lpm, cpu)->parent;
 
+	update_debug_pc_event(CPU_HP_DYING, cpu,
+				cluster->num_children_in_sync.bits[0],
+				cluster->child_cpus.bits[0], false);
 	cluster_prepare(cluster, get_cpu_mask(cpu), NR_LPM_LEVELS, false, 0);
 	return 0;
 }
@@ -282,8 +325,10 @@ static int lpm_starting_cpu(unsigned int cpu)
 {
 	struct lpm_cluster *cluster = per_cpu(cpu_lpm, cpu)->parent;
 
-	cluster_unprepare(cluster, get_cpu_mask(cpu), NR_LPM_LEVELS, false,
-						0, true);
+	update_debug_pc_event(CPU_HP_STARTING, cpu,
+				cluster->num_children_in_sync.bits[0],
+				cluster->child_cpus.bits[0], false);
+	cluster_unprepare(cluster, get_cpu_mask(cpu), NR_LPM_LEVELS, false, 0);
 	return 0;
 }
 
@@ -575,7 +620,7 @@ static int cpu_power_select(struct cpuidle_device *dev,
 	uint32_t *min_residency = get_per_cpu_min_residency(dev->cpu);
 	uint32_t *max_residency = get_per_cpu_max_residency(dev->cpu);
 
-	if (((sleep_disabled || sleep_disabled_touch) && !cpu_isolated(dev->cpu)) || sleep_us < 0)
+	if ((sleep_disabled && !cpu_isolated(dev->cpu)) || sleep_us < 0)
 		return best_level;
 
 	idx_restrict = cpu->nlevels + 1;
@@ -995,6 +1040,9 @@ static int cluster_configure(struct lpm_cluster *cluster, int idx,
 	}
 
 	if (idx != cluster->default_level) {
+		update_debug_pc_event(CLUSTER_ENTER, idx,
+			cluster->num_children_in_sync.bits[0],
+			cluster->child_cpus.bits[0], from_idle);
 		trace_cluster_enter(cluster->cluster_name, idx,
 			cluster->num_children_in_sync.bits[0],
 			cluster->child_cpus.bits[0], from_idle);
@@ -1117,7 +1165,7 @@ failed:
 
 static void cluster_unprepare(struct lpm_cluster *cluster,
 		const struct cpumask *cpu, int child_idx, bool from_idle,
-		int64_t end_time, bool success)
+		int64_t end_time)
 {
 	struct lpm_cluster_level *level;
 	bool first_cpu;
@@ -1154,17 +1202,20 @@ static void cluster_unprepare(struct lpm_cluster *cluster,
 	if (cluster->stats->sleep_time)
 		cluster->stats->sleep_time = end_time -
 			cluster->stats->sleep_time;
-	lpm_stats_cluster_exit(cluster->stats, cluster->last_level, success);
+	lpm_stats_cluster_exit(cluster->stats, cluster->last_level, true);
 
 	level = &cluster->levels[cluster->last_level];
 
 	if (level->notify_rpm)
 		if (sys_pm_ops && sys_pm_ops->exit) {
 			spin_lock(&bc_timer_lock);
-			sys_pm_ops->exit(success);
+			sys_pm_ops->exit();
 			spin_unlock(&bc_timer_lock);
 		}
 
+	update_debug_pc_event(CLUSTER_EXIT, cluster->last_level,
+			cluster->num_children_in_sync.bits[0],
+			cluster->child_cpus.bits[0], from_idle);
 	trace_cluster_exit(cluster->cluster_name, cluster->last_level,
 			cluster->num_children_in_sync.bits[0],
 			cluster->child_cpus.bits[0], from_idle);
@@ -1178,7 +1229,7 @@ static void cluster_unprepare(struct lpm_cluster *cluster,
 		update_cluster_history(&cluster->history, last_level);
 
 	cluster_unprepare(cluster->parent, &cluster->child_cpus,
-			last_level, from_idle, end_time, success);
+			last_level, from_idle, end_time);
 unlock_return:
 	spin_unlock(&cluster->sync_lock);
 }
@@ -1262,19 +1313,19 @@ static bool psci_enter_sleep(struct lpm_cpu *cpu, int idx, bool from_idle)
 
 	if (!idx) {
 		stop_critical_timings();
-		cpu_do_idle();
+		wfi();
 		start_critical_timings();
 		return 1;
 	}
 
 	if (from_idle && cpu->levels[idx].use_bc_timer) {
 		/*
-		 * tick_broadcast_enter can change the affinity of the
-		 * broadcast timer interrupt, during which interrupt will
-		 * be disabled and enabled back. To avoid system pm ops
-		 * doing any interrupt state save or restore in between
-		 * this window hold the lock.
-		 */
+		* tick_broadcast_enter can change the affinity of the
+		* broadcast timer interrupt, during which interrupt will
+		* be disabled and enabled back. To avoid system pm ops
+		* doing any interrupt state save or restore in between
+		* this window hold the lock.
+		*/
 		spin_lock(&bc_timer_lock);
 		ret = tick_broadcast_enter();
 		spin_unlock(&bc_timer_lock);
@@ -1287,11 +1338,15 @@ static bool psci_enter_sleep(struct lpm_cpu *cpu, int idx, bool from_idle)
 	affinity_level = PSCI_AFFINITY_LEVEL(affinity_level);
 	state_id += power_state + affinity_level + cpu->levels[idx].psci_id;
 
+	update_debug_pc_event(CPU_ENTER, state_id,
+			0xdeaffeed, 0xdeaffeed, from_idle);
 	stop_critical_timings();
 
 	success = !arm_cpuidle_suspend(state_id);
 
 	start_critical_timings();
+	update_debug_pc_event(CPU_EXIT, state_id,
+			success, 0xdeaffeed, from_idle);
 
 	if (from_idle && cpu->levels[idx].use_bc_timer)
 		tick_broadcast_exit();
@@ -1368,7 +1423,7 @@ exit:
 	end_time = ktime_to_ns(ktime_get());
 	lpm_stats_cpu_exit(idx, end_time, success);
 
-	cluster_unprepare(cpu->parent, cpumask, idx, true, end_time, success);
+	cluster_unprepare(cpu->parent, cpumask, idx, true, end_time);
 	cpu_unprepare(cpu, idx, true);
 	dev->last_residency = ktime_us_delta(ktime_get(), start);
 	update_history(dev, idx);
@@ -1384,13 +1439,8 @@ exit:
 static void lpm_cpuidle_freeze(struct cpuidle_device *dev,
 		struct cpuidle_driver *drv, int idx)
 {
-	static DEFINE_SPINLOCK(s2idle_lock);
-	static struct cpumask idling_cpus;
-	static s2idle_sleep_attempts;
-	static bool s2idle_aborted;
 	struct lpm_cpu *cpu = per_cpu(cpu_lpm, dev->cpu);
 	const struct cpumask *cpumask = get_cpu_mask(dev->cpu);
-	bool success = false;
 
 	for (; idx >= 0; idx--) {
 		if (lpm_cpu_mode_allow(dev->cpu, idx, false))
@@ -1401,40 +1451,13 @@ static void lpm_cpuidle_freeze(struct cpuidle_device *dev,
 		return;
 	}
 
-	spin_lock(&s2idle_lock);
-	if (cpumask_empty(&idling_cpus)) {
-		s2idle_sleep_attempts = 0;
-		s2idle_aborted = false;
-	} else if (s2idle_aborted) {
-		spin_unlock(&s2idle_lock);
-		return;
-	}
-
-	cpumask_or(&idling_cpus, &idling_cpus, cpumask);
-	if (++s2idle_sleep_attempts > MAX_S2IDLE_CPU_ATTEMPTS) {
-		s2idle_aborted = true;
-	}
-	spin_unlock(&s2idle_lock);
-
-	if (s2idle_aborted) {
-		pr_err("Aborting s2idle suspend: too many iterations\n");
-		log_bad_wake_reason("s2idle soft watchdog");
-		pm_system_wakeup();
-		goto exit;
-	}
-
 	cpu_prepare(cpu, idx, true);
 	cluster_prepare(cpu->parent, cpumask, idx, false, 0);
 
-	success = psci_enter_sleep(cpu, idx, false);
+	psci_enter_sleep(cpu, idx, false);
 
-	cluster_unprepare(cpu->parent, cpumask, idx, false, 0, success);
+	cluster_unprepare(cpu->parent, cpumask, idx, false, 0);
 	cpu_unprepare(cpu, idx, true);
-
-exit:
-	spin_lock(&s2idle_lock);
-	cpumask_andnot(&idling_cpus, &idling_cpus, cpumask);
-	spin_unlock(&s2idle_lock);
 }
 
 #ifdef CONFIG_CPU_IDLE_MULTIPLE_DRIVERS
@@ -1648,7 +1671,6 @@ static int lpm_suspend_enter(suspend_state_t state)
 	struct lpm_cluster *cluster = lpm_cpu->parent;
 	const struct cpumask *cpumask = get_cpu_mask(cpu);
 	int idx;
-	bool success;
 
 	for (idx = lpm_cpu->nlevels - 1; idx >= 0; idx--) {
 		if (lpm_cpu_mode_allow(cpu, idx, false))
@@ -1661,9 +1683,9 @@ static int lpm_suspend_enter(suspend_state_t state)
 	cpu_prepare(lpm_cpu, idx, false);
 	cluster_prepare(cluster, cpumask, idx, false, 0);
 
-	success = psci_enter_sleep(lpm_cpu, idx, false);
+	psci_enter_sleep(lpm_cpu, idx, false);
 
-	cluster_unprepare(cluster, cpumask, idx, false, 0, success);
+	cluster_unprepare(cluster, cpumask, idx, false, 0);
 	cpu_unprepare(lpm_cpu, idx, false);
 	return 0;
 }
@@ -1683,9 +1705,11 @@ static const struct platform_freeze_ops lpm_freeze_ops = {
 static int lpm_probe(struct platform_device *pdev)
 {
 	int ret;
+	int size;
 	unsigned int cpu;
 	struct hrtimer *cpu_histtimer;
 	struct kobject *module_kobj = NULL;
+	struct md_region md_entry;
 
 	get_online_cpus();
 	lpm_root_node = lpm_of_parse_cluster(pdev);
@@ -1715,6 +1739,10 @@ static int lpm_probe(struct platform_device *pdev)
 
 	cluster_timer_init(lpm_root_node);
 
+	size = num_dbg_elements * sizeof(struct lpm_debug);
+	lpm_debug = dma_alloc_coherent(&pdev->dev, size,
+			&lpm_debug_phys, GFP_KERNEL);
+
 	register_cluster_lpm_stats(lpm_root_node, NULL);
 
 	ret = cluster_cpuidle_register(lpm_root_node);
@@ -1743,6 +1771,14 @@ static int lpm_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
+	/* Add lpm_debug to Minidump*/
+	strlcpy(md_entry.name, "KLPMDEBUG", sizeof(md_entry.name));
+	md_entry.virt_addr = (uintptr_t)lpm_debug;
+	md_entry.phys_addr = lpm_debug_phys;
+	md_entry.size = size;
+	if (msm_minidump_add_region(&md_entry))
+		pr_info("Failed to add lpm_debug in Minidump\n");
+
 	return 0;
 failed:
 	free_cluster_node(lpm_root_node);
@@ -1760,7 +1796,6 @@ static struct platform_driver lpm_driver = {
 	.driver = {
 		.name = "lpm-levels",
 		.owner = THIS_MODULE,
-		.suppress_bind_attrs = true,
 		.of_match_table = lpm_mtch_tbl,
 	},
 };

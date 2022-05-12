@@ -1,6 +1,5 @@
 /*
  * Copyright (c) 2017, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -204,10 +203,10 @@ static const struct pinctrl_pin_desc sdm845_pins[] = {
 	PINCTRL_PIN(78, "GPIO_78"),
 	PINCTRL_PIN(79, "GPIO_79"),
 	PINCTRL_PIN(80, "GPIO_80"),
-	PINCTRL_PIN(81, "GPIO_81"),
-	PINCTRL_PIN(82, "GPIO_82"),
-	PINCTRL_PIN(83, "GPIO_83"),
-	PINCTRL_PIN(84, "GPIO_84"),
+	PINCTRL_PIN_NR(81, "GPIO_81"),
+	PINCTRL_PIN_NR(82, "GPIO_82"),
+	PINCTRL_PIN_NR(83, "GPIO_83"),
+	PINCTRL_PIN_NR(84, "GPIO_84"),
 	PINCTRL_PIN(85, "GPIO_85"),
 	PINCTRL_PIN(86, "GPIO_86"),
 	PINCTRL_PIN(87, "GPIO_87"),
@@ -1664,7 +1663,7 @@ static struct msm_dir_conn sdm845_dir_conn[] = {
 	{24, 517},
 	{26, 518},
 	{30, 519},
-	{31, 639},
+	{31, 632},
 	{32, 521},
 	{34, 522},
 	{36, 523},

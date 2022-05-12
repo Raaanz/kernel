@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2016, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,8 +17,10 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 
+#define MAX_SSR_REASON_LEN  256U
+#define MAX_CRASH_TIMESTAMP_LEN  30U
+
 struct subsys_device;
-extern struct bus_type subsys_bus_type;
 
 enum {
 	RESET_SOC = 0,
@@ -34,30 +36,6 @@ enum crash_status {
 
 struct device;
 struct module;
-
-enum ssr_comm {
-	SUBSYS_TO_SUBSYS_SYSMON,
-	SUBSYS_TO_HLOS,
-	HLOS_TO_SUBSYS_SYSMON_SHUTDOWN,
-	NUM_SSR_COMMS,
-};
-
-/**
- * struct subsys_notif_timeout - timeout data used by notification timeout hdlr
- * @comm_type: Specifies if the type of communication being tracked is
- * through sysmon between two subsystems, subsystem notifier call chain, or
- * sysmon shutdown.
- * @dest_name: subsystem to which sysmon notification is being sent to
- * @source_name: subsystem which generated event that notification is being sent
- * for
- * @timer: timer for scheduling timeout
- */
-struct subsys_notif_timeout {
-	enum ssr_comm comm_type;
-	const char *dest_name;
-	const char *source_name;
-	struct timer_list timer;
-};
 
 /**
  * struct subsys_desc - subsystem descriptor
@@ -83,6 +61,8 @@ struct subsys_notif_timeout {
  * @ignore_ssr_failure: SSR failures are usually fatal and results in panic. If
  * set will ignore failure.
  * @edge: GLINK logical name of the subsystem
+ * @last_crash_reason: reason of the last crash
+ * @last_crash_timestamp: timestamp of the last crash
  */
 struct subsys_desc {
 	const char *name;
@@ -119,9 +99,8 @@ struct subsys_desc {
 	bool system_debug;
 	bool ignore_ssr_failure;
 	const char *edge;
-#ifdef CONFIG_SETUP_SSR_NOTIF_TIMEOUTS
-	struct subsys_notif_timeout timeout_data;
-#endif /* CONFIG_SETUP_SSR_NOTIF_TIMEOUTS */
+	char last_crash_reason[MAX_SSR_REASON_LEN];
+	char last_crash_timestamp[MAX_CRASH_TIMESTAMP_LEN];
 };
 
 /**

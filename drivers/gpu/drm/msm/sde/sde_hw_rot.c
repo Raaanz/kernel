@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -62,6 +62,16 @@ static struct sde_rot_cfg *_rot_offset(enum sde_rot rot,
 }
 
 /**
+ * _sde_hw_rot_reg_dump - perform register dump
+ * @ptr: private pointer to rotator platform device
+ * return: None
+ */
+static void _sde_hw_rot_reg_dump(void *ptr)
+{
+	sde_rotator_inline_reg_dump((struct platform_device *) ptr);
+}
+
+/**
  * sde_hw_rot_start - start rotator before any commit
  * @hw: Pointer to rotator hardware driver
  * return: 0 if success; error code otherwise
@@ -77,6 +87,10 @@ static int sde_hw_rot_start(struct sde_hw_rot *hw)
 	}
 
 	pdev = hw->caps->pdev;
+
+	rc = sde_dbg_reg_register_cb(hw->name, _sde_hw_rot_reg_dump, pdev);
+	if (rc)
+		SDE_ERROR("failed to register debug dump %d\n", rc);
 
 	hw->rot_ctx = sde_rotator_inline_open(pdev);
 	if (IS_ERR_OR_NULL(hw->rot_ctx)) {
@@ -102,6 +116,9 @@ static void sde_hw_rot_stop(struct sde_hw_rot *hw)
 
 	sde_rotator_inline_release(hw->rot_ctx);
 	hw->rot_ctx = NULL;
+
+	sde_dbg_reg_unregister_cb(hw->name, _sde_hw_rot_reg_dump,
+			hw->caps->pdev);
 }
 
 /**
@@ -550,14 +567,9 @@ static int sde_hw_rot_adjust_prefill_bw(struct sde_hw_rot *hw,
 	}
 
 	/* adjust bw for scaling */
-	if (data->dst_rect_h) {
-		u64 temp;
-
-		temp = DIV_ROUND_UP_ULL(data->prefill_bw,
+	if (data->dst_rect_h)
+		*prefill_bw = mult_frac(data->prefill_bw, data->crtc_h,
 				data->dst_rect_h);
-		*prefill_bw = temp * data->crtc_h;
-	}
-
 	return 0;
 }
 

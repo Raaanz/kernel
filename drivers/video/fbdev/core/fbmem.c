@@ -1139,7 +1139,7 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 	case FBIOGET_FSCREENINFO:
 		if (!lock_fb_info(info))
 			return -ENODEV;
-		memcpy(&fix, &info->fix, sizeof(fix));
+		fix = info->fix;
 		unlock_fb_info(info);
 
 		ret = copy_to_user(argp, &fix, sizeof(fix)) ? -EFAULT : 0;
@@ -1226,6 +1226,8 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 		console_unlock();
 		break;
 	default:
+		if (!lock_fb_info(info))
+			return -ENODEV;
 		fb = info->fbops;
 		if (fb->fb_ioctl_v2)
 			ret = fb->fb_ioctl_v2(info, cmd, arg, file);
@@ -1233,6 +1235,7 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 			ret = fb->fb_ioctl(info, cmd, arg);
 		else
 			ret = -ENOTTY;
+		unlock_fb_info(info);
 	}
 	return ret;
 }

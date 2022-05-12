@@ -135,7 +135,6 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	inode->i_sb = sb;
 	inode->i_blkbits = sb->s_blocksize_bits;
 	inode->i_flags = 0;
-	atomic64_set(&inode->i_sequence, 0);
 	atomic_set(&inode->i_count, 1);
 	inode->i_op = &empty_iops;
 	inode->i_fop = &no_open_fops;
@@ -282,8 +281,17 @@ void drop_nlink(struct inode *inode)
 {
 	WARN_ON(inode->i_nlink == 0);
 	inode->__i_nlink--;
-	if (!inode->i_nlink)
+	if (!inode->i_nlink) {
 		atomic_long_inc(&inode->i_sb->s_remove_count);
+#if IS_ENABLED(CONFIG_FS_VERITY)
+		if (!list_empty(&inode->i_fsverity_list)) {
+			spin_lock(&inode->i_sb->s_inode_fsveritylist_lock);
+			list_del_init(&inode->i_fsverity_list);
+			spin_unlock(&inode->i_sb->s_inode_fsveritylist_lock);
+			iput(inode);
+		}
+#endif
+	}
 }
 EXPORT_SYMBOL(drop_nlink);
 
@@ -370,6 +378,9 @@ void inode_init_once(struct inode *inode)
 	INIT_LIST_HEAD(&inode->i_io_list);
 	INIT_LIST_HEAD(&inode->i_wb_list);
 	INIT_LIST_HEAD(&inode->i_lru);
+#if IS_ENABLED(CONFIG_FS_VERITY)
+	INIT_LIST_HEAD(&inode->i_fsverity_list);
+#endif
 	address_space_init_once(&inode->i_data);
 	i_size_ordered_init(inode);
 #ifdef CONFIG_FSNOTIFY
@@ -1644,7 +1655,7 @@ EXPORT_SYMBOL(generic_update_time);
  * This does the actual work of updating an inodes time or version.  Must have
  * had called mnt_want_write() before calling this.
  */
-static int update_time(struct inode *inode, struct timespec *time, int flags)
+int update_time(struct inode *inode, struct timespec *time, int flags)
 {
 	int (*update_time)(struct inode *, struct timespec *, int);
 
@@ -2135,27 +2146,3 @@ struct timespec current_time(struct inode *inode)
 	return timespec_trunc(now, inode->i_sb->s_time_gran);
 }
 EXPORT_SYMBOL(current_time);
-
-/*
- * Generic function to check FS_IOC_SETFLAGS values and reject any invalid
- * configurations.
- *
- * Note: the caller should be holding i_mutex, or else be sure that they have
- * exclusive access to the inode structure.
- */
-int vfs_ioc_setflags_prepare(struct inode *inode, unsigned int oldflags,
-			     unsigned int flags)
-{
-	/*
-	 * The IMMUTABLE and APPEND_ONLY flags can only be changed by
-	 * the relevant capability.
-	 *
-	 * This test looks nicer. Thanks to Pauline Middelink
-	 */
-	if ((flags ^ oldflags) & (FS_APPEND_FL | FS_IMMUTABLE_FL) &&
-	    !capable(CAP_LINUX_IMMUTABLE))
-		return -EPERM;
-
-	return 0;
-}
-EXPORT_SYMBOL(vfs_ioc_setflags_prepare);

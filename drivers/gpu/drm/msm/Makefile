@@ -33,6 +33,8 @@ msm_drm-y := \
 	sde/sde_connector.o \
 	sde/sde_color_processing.o \
 	sde/sde_vbif.o \
+	sde_dbg.o \
+	sde_dbg_evtlog.o \
 	sde_io_util.o \
 	sde/sde_hw_reg_dma_v1_color_proc.o \
 	sde/sde_hw_color_proc_v4.o \
@@ -132,6 +134,7 @@ msm_drm-$(CONFIG_DRM_MSM_DSI_STAGING) += dsi-staging/dsi_phy.o \
 				dsi-staging/dsi_drm.o \
 				dsi-staging/dsi_display.o \
 				dsi-staging/dsi_panel.o \
+				dsi-staging/dsi_backlight.o \
 				dsi-staging/dsi_clk_manager.o \
 				dsi-staging/dsi_display_test.o
 
@@ -185,3 +188,11 @@ msm_drm-$(CONFIG_DRM_MSM) += \
 	msm_debugfs.o
 
 obj-$(CONFIG_DRM_MSM)	+= msm_drm.o
+
+# TODO: remove me b/62058353
+subdir-ccflags-y += \
+	-Wno-header-guard \
+	-Wno-pointer-bool-conversion \
+	-Wno-duplicate-decl-specifier \
+
+CFLAGS_sde_crtc.o += -Wframe-larger-than=3072

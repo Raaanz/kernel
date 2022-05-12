@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2013-2014, 2017-2018,
- * The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2017, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -31,9 +30,7 @@
 struct qcom_cc {
 	struct qcom_reset_controller reset;
 	struct clk_regmap **rclks;
-	struct clk_hw **hwclks;
 	size_t num_rclks;
-	size_t num_hwclks;
 };
 
 const
@@ -41,9 +38,6 @@ struct freq_tbl *qcom_find_freq(const struct freq_tbl *f, unsigned long rate)
 {
 	if (!f)
 		return NULL;
-
-	if (!f->freq)
-		return f;
 
 	for (; f->freq; f++)
 		if (rate <= f->freq)
@@ -188,13 +182,10 @@ static struct clk_hw *qcom_cc_clk_hw_get(struct of_phandle_args *clkspec,
 	struct qcom_cc *cc = data;
 	unsigned int idx = clkspec->args[0];
 
-	if (idx >= cc->num_rclks + cc->num_hwclks) {
+	if (idx >= cc->num_rclks) {
 		pr_err("invalid index %u\n", idx);
 		return ERR_PTR(-EINVAL);
 	}
-
-	if (idx < cc->num_hwclks && cc->hwclks[idx])
-		return cc->hwclks[idx];
 
 	return cc->rclks[idx] ? &cc->rclks[idx]->hw : ERR_PTR(-ENOENT);
 }
@@ -208,9 +199,7 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 	struct qcom_cc *cc;
 	struct gdsc_desc *scd;
 	size_t num_clks = desc->num_clks;
-	size_t num_hwclks = desc->num_hwclks;
 	struct clk_regmap **rclks = desc->clks;
-	struct clk_hw **hwclks = desc->hwclks;
 
 	cc = devm_kzalloc(dev, sizeof(*cc), GFP_KERNEL);
 	if (!cc)
@@ -218,17 +207,6 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 
 	cc->rclks = rclks;
 	cc->num_rclks = num_clks;
-	cc->hwclks = hwclks;
-	cc->num_hwclks = num_hwclks;
-
-	for (i = 0; i < num_hwclks; i++) {
-		if (!hwclks[i])
-			continue;
-
-		ret = devm_clk_hw_register(dev, hwclks[i]);
-		if (ret)
-			return ret;
-	}
 
 	for (i = 0; i < num_clks; i++) {
 		if (!rclks[i])

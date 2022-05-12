@@ -352,9 +352,9 @@ enum dev_state {
  * @upthreshold: up-threshold supplied to ondemand governor
  * @downthreshold: down-threshold supplied to ondemand governor
  * @need_freq_change: flag indicating if a frequency change is required
+ * @clk_scaling_in_progress: flag indicating if there's ongoing frequency change
  * @is_busy_started: flag indicating if a request is handled by the HW
  * @enable: flag indicating if the clock scaling logic is enabled for this host
- * @is_suspended: to make devfreq request queued when mmc is suspened
  */
 struct mmc_devfeq_clk_scaling {
 	spinlock_t	lock;
@@ -379,10 +379,79 @@ struct mmc_devfeq_clk_scaling {
 	unsigned int	lower_bus_speed_mode;
 #define MMC_SCALING_LOWER_DDR52_MODE	1
 	bool		need_freq_change;
+	bool		clk_scaling_in_progress;
 	bool		is_busy_started;
 	bool		enable;
-	bool		is_suspended;
 };
+
+#ifdef CONFIG_DEBUG_FS
+/* tag stats statistics types */
+enum ts_types {
+	TS_NOT_SUPPORTED	= -1,
+	TS_TAG			= 0,
+	TS_READ			= 1,
+	TS_WRITE		= 2,
+	TS_URGENT_READ		= 3,
+	TS_URGENT_WRITE		= 4,
+	TS_FLUSH		= 5,
+	TS_DISCARD		= 6,
+	TS_NUM_STATS		= 7,
+};
+
+/* eMMC Slow I/O sysfs entry types */
+enum mmc_slowio_systype {
+	MMC_SLOWIO_US = 0,
+	MMC_SLOWIO_CNT = 1,
+	MMC_SLOWIO_SYS_MAX = 2,
+};
+
+#define MMC_MIN_SLOWIO_US                  (50000)    /* 50 ms      */
+#define MMC_DEFAULT_SLOWIO_READ_US         (5000000)  /*  5 seconds */
+#define MMC_DEFAULT_SLOWIO_WRITE_US        (10000000) /* 10 seconds */
+#define MMC_DEFAULT_SLOWIO_URGENT_READ_US  (5000000)  /*  5 seconds */
+#define MMC_DEFAULT_SLOWIO_URGENT_WRITE_US (10000000) /* 10 seconds */
+#define MMC_DEFAULT_SLOWIO_FLUSH_US        (10000000) /* 10 seconds */
+#define MMC_DEFAULT_SLOWIO_DISCARD_US      (30000000) /* 30 seconds */
+
+/**
+ * struct mmc_req_stat - statistics for request handling times (in usec)
+ * @min: shortest time measured
+ * @max: longest time measured
+ * @sum: sum of all the handling times measured (used for average calculation)
+ * @count: number of measurements taken
+ */
+struct mmc_req_stat {
+	u64 min;
+	u64 max;
+	u64 sum;
+	u64 count;
+	u64 size;
+};
+
+/**
+ * struct mmc_io_stat - statistics for I/O amount.
+ * @req_count_started: total number of I/O requests, which were started.
+ * @total_bytes_started: total I/O amount in bytes, which were started.
+ * @req_count_completed: total number of I/O request, which were completed.
+ * @total_bytes_completed: total I/O amount in bytes, which were completed.
+ * @max_diff_req_count: MAX of 'req_count_started - req_count_completed'.
+ * @max_diff_total_bytes: MAX of 'total_bytes_started - total_bytes_completed'.
+ */
+struct mmc_io_stat {
+	u64 req_count_started;
+	u64 total_bytes_started;
+	u64 req_count_completed;
+	u64 total_bytes_completed;
+	u64 max_diff_req_count;
+	u64 max_diff_total_bytes;
+};
+
+struct mmc_stats {
+	struct mmc_io_stat io_read;
+	struct mmc_io_stat io_write;
+	struct mmc_io_stat io_readwrite;
+};
+#endif
 
 struct mmc_host {
 	struct device		*parent;
@@ -586,7 +655,15 @@ struct mmc_host {
 	u32			err_stats[MMC_ERR_MAX];
 	ktime_t			last_failed_rq_time;
 	ktime_t			last_completed_rq_time;
+#ifdef CONFIG_DEBUG_FS
+	struct mmc_req_stat mmc_req_stats[TS_NUM_STATS];
+	struct mmc_stats mmc_stats;
+	spinlock_t		stat_lock;	/* lock for collect IO stat */
 
+	/* Slow IO */
+	u64 slowio_min_us;
+	u64 slowio[TS_NUM_STATS][MMC_SLOWIO_SYS_MAX];
+#endif
 	struct mmc_async_req	*areq;		/* active async req */
 	struct mmc_context_info	context_info;	/* async synchronization info */
 
@@ -688,6 +765,15 @@ static inline void *mmc_cmdq_private(struct mmc_host *host)
 	return host->cmdq_private;
 }
 
+#ifdef CONFIG_DEBUG_FS
+static inline void mmc_init_req_stats(struct mmc_host *host)
+{
+	memset(host->mmc_req_stats, 0, sizeof(host->mmc_req_stats));
+}
+#else
+static inline void mmc_init_req_stats(struct mmc_host *host) {}
+#endif
+
 #define mmc_host_is_spi(host)	((host)->caps & MMC_CAP_SPI)
 
 #define mmc_dev(x)	((x)->parent)
@@ -698,7 +784,6 @@ static inline void *mmc_cmdq_private(struct mmc_host *host)
 #define mmc_bus_manual_resume(host) ((host)->bus_resume_flags & \
 				MMC_BUSRESUME_MANUAL_RESUME)
 
-#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 static inline void mmc_set_bus_resume_policy(struct mmc_host *host, int manual)
 {
 	if (manual)
@@ -706,11 +791,6 @@ static inline void mmc_set_bus_resume_policy(struct mmc_host *host, int manual)
 	else
 		host->bus_resume_flags &= ~MMC_BUSRESUME_MANUAL_RESUME;
 }
-#else
-static inline void mmc_set_bus_resume_policy(struct mmc_host *host, int manual)
-{
-}
-#endif
 
 extern int mmc_resume_bus(struct mmc_host *host);
 

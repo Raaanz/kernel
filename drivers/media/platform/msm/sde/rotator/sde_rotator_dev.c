@@ -3664,8 +3664,6 @@ static int sde_rotator_probe(struct platform_device *pdev)
 		rot_dev->kthread_free[i] = true;
 	}
 
-	device_enable_async_suspend(&pdev->dev);
-
 	SDEDEV_INFO(&pdev->dev, "SDE v4l2 rotator probe success\n");
 
 	return 0;
@@ -3735,7 +3733,6 @@ static struct platform_driver rotator_driver = {
 		.name = SDE_ROTATOR_DRV_NAME,
 		.of_match_table = sde_rotator_dt_match,
 		.pm = &sde_rotator_pm_ops,
-		.suppress_bind_attrs = true,
 	},
 };
 

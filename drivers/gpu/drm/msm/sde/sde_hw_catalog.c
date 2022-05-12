@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -249,7 +249,6 @@ enum {
 	DITHER_OFF,
 	DITHER_LEN,
 	DITHER_VER,
-	TE_SOURCE,
 	PP_PROP_MAX,
 };
 
@@ -523,7 +522,7 @@ struct sde_prop_type mixer_blend_prop[] = {
 static struct sde_prop_type mixer_prop[] = {
 	{MIXER_OFF, "qcom,sde-mixer-off", true, PROP_TYPE_U32_ARRAY},
 	{MIXER_LEN, "qcom,sde-mixer-size", false, PROP_TYPE_U32},
-	{MIXER_PAIR_MASK, "qcom,sde-mixer-pair-mask", false,
+	{MIXER_PAIR_MASK, "qcom,sde-mixer-pair-mask", true,
 		PROP_TYPE_U32_ARRAY},
 	{MIXER_BLOCKS, "qcom,sde-mixer-blocks", false, PROP_TYPE_NODE},
 	{MIXER_DISP, "qcom,sde-mixer-display-pref", false,
@@ -590,7 +589,6 @@ static struct sde_prop_type pp_prop[] = {
 	{DITHER_OFF, "qcom,sde-dither-off", false, PROP_TYPE_U32_ARRAY},
 	{DITHER_LEN, "qcom,sde-dither-size", false, PROP_TYPE_U32},
 	{DITHER_VER, "qcom,sde-dither-version", false, PROP_TYPE_U32},
-	{TE_SOURCE, "qcom,sde-te-source", false, PROP_TYPE_U32_ARRAY},
 };
 
 static struct sde_prop_type dsc_prop[] = {
@@ -1280,7 +1278,6 @@ static int sde_sspp_parse_dt(struct device_node *np,
 			sde_cfg->mdp[j].clk_ctrls[sspp->clk_ctrl].bit_off =
 				PROP_BITVALUE_ACCESS(prop_value,
 						SSPP_CLK_CTRL, i, 1);
-			sde_cfg->mdp[j].clk_ctrls[sspp->clk_ctrl].val = -1;
 		}
 
 		SDE_DEBUG(
@@ -1461,7 +1458,7 @@ static int sde_mixer_parse_dt(struct device_node *np,
 			goto end;
 		}
 		mixer->sblk = sblk;
-		mixer->lm_pair_mask = 0xFFFFFFFF;
+
 		mixer->base = mixer_base;
 		mixer->len = PROP_VALUE_ACCESS(prop_value, MIXER_LEN, 0);
 		mixer->id = LM_0 + i;
@@ -1707,7 +1704,6 @@ static int sde_wb_parse_dt(struct device_node *np, struct sde_mdss_cfg *sde_cfg)
 			sde_cfg->mdp[j].clk_ctrls[wb->clk_ctrl].bit_off =
 				PROP_BITVALUE_ACCESS(prop_value,
 						WB_CLK_CTRL, i, 1);
-			sde_cfg->mdp[j].clk_ctrls[wb->clk_ctrl].val = -1;
 		}
 
 		wb->format_list = sde_cfg->wb_formats;
@@ -1894,7 +1890,6 @@ static void _sde_inline_rot_parse_dt(struct device_node *np,
 			sde_cfg->mdp[j].clk_ctrls[index].bit_off =
 				PROP_BITVALUE_ACCESS(prop_value,
 						INLINE_ROT_CLK_CTRL, i, 1);
-			sde_cfg->mdp[j].clk_ctrls[index].val = -1;
 		}
 
 		SDE_DEBUG("rot- xin:%d, num:%d, rd:%d, clk:%d:0x%x/%d\n",
@@ -2351,7 +2346,7 @@ static int sde_cdm_parse_dt(struct device_node *np,
 
 		/* intf3 and wb2 for cdm block */
 		cdm->wb_connect = sde_cfg->wb_count ? BIT(WB_2) : BIT(31);
-		cdm->intf_connect = sde_cfg->intf_count ? BIT(INTF_0) : BIT(31);
+		cdm->intf_connect = sde_cfg->intf_count ? BIT(INTF_3) : BIT(31);
 	}
 
 end:
@@ -2633,10 +2628,6 @@ static int sde_pp_parse_dt(struct device_node *np, struct sde_mdss_cfg *sde_cfg)
 		snprintf(pp->name, SDE_HW_BLK_NAME_LEN, "pingpong_%u",
 				pp->id - PINGPONG_0);
 		pp->len = PROP_VALUE_ACCESS(prop_value, PP_LEN, 0);
-		pp->te_source = PROP_VALUE_ACCESS(prop_value, TE_SOURCE, i);
-		if (!prop_exists[TE_SOURCE] ||
-			pp->te_source > SDE_VSYNC_SOURCE_WD_TIMER_0)
-			pp->te_source = SDE_VSYNC0_SOURCE_GPIO;
 
 		sblk->te.base = PROP_VALUE_ACCESS(prop_value, TE_OFF, i);
 		sblk->te.id = SDE_PINGPONG_TE;
@@ -3268,7 +3259,9 @@ static int _sde_hardware_pre_caps(struct sde_mdss_cfg *sde_cfg, uint32_t hw_rev)
 		sde_cfg->sui_block_xin_mask = 0x3F71;
 	} else if (IS_SDM670_TARGET(hw_rev)) {
 		/* update sdm670 target here */
+		sde_cfg->has_cwb_support = true;
 		sde_cfg->has_wb_ubwc = true;
+		sde_cfg->has_cwb_support = true;
 		sde_cfg->perf.min_prefill_lines = 24;
 		sde_cfg->vbif_qos_nlvl = 8;
 		sde_cfg->ts_prefill_rev = 2;

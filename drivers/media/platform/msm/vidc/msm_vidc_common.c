@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1747,6 +1747,7 @@ static void handle_event_change(enum hal_command_response cmd, void *data)
 			dprintk(VIDC_ERR,
 				"Failed : No buffer requirements : %x\n",
 					HAL_BUFFER_OUTPUT);
+			mutex_unlock(&inst->lock);
 			return;
 		}
 
@@ -1758,6 +1759,7 @@ static void handle_event_change(enum hal_command_response cmd, void *data)
 			dprintk(VIDC_ERR,
 				"Failed : No buffer requirements : %x\n",
 					HAL_BUFFER_OUTPUT2);
+			mutex_unlock(&inst->lock);
 			return;
 		}
 
@@ -1770,6 +1772,7 @@ static void handle_event_change(enum hal_command_response cmd, void *data)
 			dprintk(VIDC_ERR,
 				"Failed : No buffer requirements : %x\n",
 					HAL_BUFFER_OUTPUT);
+			mutex_unlock(&inst->lock);
 			return;
 		}
 		bufreq->buffer_count_min = event_notify->capture_buf_count;
@@ -3166,11 +3169,10 @@ exit:
 static void msm_vidc_print_running_insts(struct msm_vidc_core *core)
 {
 	struct msm_vidc_inst *temp;
-	int op_rate = 0;
 
 	dprintk(VIDC_ERR, "Running instances:\n");
-	dprintk(VIDC_ERR, "%4s|%4s|%4s|%4s|%6s|%4s\n",
-			"type", "w", "h", "fps", "opr", "prop");
+	dprintk(VIDC_ERR, "%4s|%4s|%4s|%4s|%4s\n",
+			"type", "w", "h", "fps", "prop");
 
 	mutex_lock(&core->lock);
 	list_for_each_entry(temp, &core->instances, list) {
@@ -3184,21 +3186,13 @@ static void msm_vidc_print_running_insts(struct msm_vidc_core *core)
 			if (msm_comm_turbo_session(temp))
 				strlcat(properties, "T", sizeof(properties));
 
-			if (is_realtime_session(temp))
-				strlcat(properties, "R", sizeof(properties));
-
-			if (temp->clk_data.operating_rate)
-				op_rate = temp->clk_data.operating_rate >> 16;
-			else
-				op_rate = temp->prop.fps;
-
-			dprintk(VIDC_ERR, "%4d|%4d|%4d|%4d|%6d|%4s\n",
+			dprintk(VIDC_ERR, "%4d|%4d|%4d|%4d|%4s\n",
 					temp->session_type,
 					max(temp->prop.width[CAPTURE_PORT],
 						temp->prop.width[OUTPUT_PORT]),
 					max(temp->prop.height[CAPTURE_PORT],
 						temp->prop.height[OUTPUT_PORT]),
-					temp->prop.fps, op_rate, properties);
+					temp->prop.fps, properties);
 		}
 	}
 	mutex_unlock(&core->lock);
@@ -5231,14 +5225,6 @@ int msm_comm_flush(struct msm_vidc_inst *inst, u32 flags)
 				"Invalid params, inst %pK\n", inst);
 		return -EINVAL;
 	}
-
-	if (inst->state < MSM_VIDC_OPEN_DONE) {
-		dprintk(VIDC_ERR,
-			"Invalid state to call flush, inst %pK, state %#x\n",
-			inst, inst->state);
-		return -EINVAL;
-	}
-
 	core = inst->core;
 	hdev = core->device;
 
@@ -5531,6 +5517,7 @@ int msm_vidc_check_scaling_supported(struct msm_vidc_inst *inst)
 {
 	u32 x_min, x_max, y_min, y_max;
 	u32 input_height, input_width, output_height, output_width;
+	u32 rotation;
 
 	if (is_heic_encode_session(inst)) {
 		dprintk(VIDC_DBG, "Skip downscale check for HEIC\n");
@@ -5569,6 +5556,20 @@ int msm_vidc_check_scaling_supported(struct msm_vidc_inst *inst)
 		dprintk(VIDC_DBG, "%s: supported WxH = %dx%d\n",
 			__func__, input_width, input_height);
 		return 0;
+	}
+
+	rotation =  msm_comm_g_ctrl_for_id(inst,
+					V4L2_CID_MPEG_VIDC_VIDEO_ROTATION);
+
+	if ((output_width != output_height) &&
+		(rotation == V4L2_CID_MPEG_VIDC_VIDEO_ROTATION_90 ||
+		rotation == V4L2_CID_MPEG_VIDC_VIDEO_ROTATION_270)) {
+
+		output_width = inst->prop.height[CAPTURE_PORT];
+		output_height = inst->prop.width[CAPTURE_PORT];
+		dprintk(VIDC_DBG,
+			"Rotation=%u Swapped Output W=%u H=%u to check scaling",
+			rotation, output_width, output_height);
 	}
 
 	x_min = (1<<16)/inst->capability.scale_x.min;
@@ -5616,6 +5617,7 @@ int msm_vidc_check_session_supported(struct msm_vidc_inst *inst)
 	struct hfi_device *hdev;
 	struct msm_vidc_core *core;
 	u32 output_height, output_width, input_height, input_width;
+	u32 rotation;
 
 	if (!inst || !inst->core || !inst->core->device) {
 		dprintk(VIDC_WARN, "%s: Invalid parameter\n", __func__);
@@ -5654,8 +5656,22 @@ int msm_vidc_check_session_supported(struct msm_vidc_inst *inst)
 		rc = -ENOTSUPP;
 	}
 
+	rotation =  msm_comm_g_ctrl_for_id(inst,
+					V4L2_CID_MPEG_VIDC_VIDEO_ROTATION);
+
 	output_height = ALIGN(inst->prop.height[CAPTURE_PORT], 16);
 	output_width = ALIGN(inst->prop.width[CAPTURE_PORT], 16);
+
+	if ((output_width != output_height) &&
+		(rotation == V4L2_CID_MPEG_VIDC_VIDEO_ROTATION_90 ||
+		rotation == V4L2_CID_MPEG_VIDC_VIDEO_ROTATION_270)) {
+
+		output_width = ALIGN(inst->prop.height[CAPTURE_PORT], 16);
+		output_height = ALIGN(inst->prop.width[CAPTURE_PORT], 16);
+		dprintk(VIDC_DBG,
+			"Rotation=%u Swapped Output W=%u H=%u to check capability",
+			rotation, output_width, output_height);
+	}
 
 	if (!rc) {
 		if (output_width < capability->width.min ||
@@ -6238,10 +6254,6 @@ u32 get_frame_size_p010(int plane, u32 height, u32 width)
 	return VENUS_BUFFER_SIZE(COLOR_FMT_P010, width, height);
 }
 
-u32 get_frame_size_nv12_512(int plane, u32 height, u32 width)
-{
-	return VENUS_BUFFER_SIZE(COLOR_FMT_NV12_512, width, height);
-}
 
 void print_vidc_buffer(u32 tag, const char *str, struct msm_vidc_inst *inst,
 		struct msm_vidc_buffer *mbuf)

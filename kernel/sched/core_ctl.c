@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, 2020 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -75,8 +75,8 @@ static struct cluster_data cluster_state[MAX_CLUSTERS];
 static unsigned int num_clusters;
 
 #define for_each_cluster(cluster, idx) \
-	for (; (idx) < num_clusters && ((cluster) = &cluster_state[idx]);\
-		(idx)++)
+	for ((cluster) = &cluster_state[idx]; (idx) < num_clusters;\
+		(idx)++, (cluster) = &cluster_state[idx])
 
 static DEFINE_SPINLOCK(state_lock);
 static void apply_need(struct cluster_data *state);
@@ -789,7 +789,6 @@ static void try_to_isolate(struct cluster_data *cluster, unsigned int need)
 	unsigned long flags;
 	unsigned int num_cpus = cluster->num_cpus;
 	unsigned int nr_isolated = 0;
-	bool first_pass = cluster->nr_not_preferred_cpus;
 
 	/*
 	 * Protect against entry being removed (and added at tail) by other
@@ -835,7 +834,6 @@ static void try_to_isolate(struct cluster_data *cluster, unsigned int need)
 	cluster->nr_isolated_cpus += nr_isolated;
 	spin_unlock_irqrestore(&state_lock, flags);
 
-again:
 	/*
 	 * If the number of active CPUs is within the limits, then
 	 * don't force isolation of any busy CPUs.
@@ -855,9 +853,6 @@ again:
 		if (cluster->active_cpus <= cluster->max_cpus)
 			break;
 
-		if (first_pass && !c->not_preferred)
-			continue;
-
 		spin_unlock_irqrestore(&state_lock, flags);
 
 		pr_debug("Trying to isolate CPU%u\n", c->cpu);
@@ -874,10 +869,6 @@ again:
 	cluster->nr_isolated_cpus += nr_isolated;
 	spin_unlock_irqrestore(&state_lock, flags);
 
-	if (first_pass && cluster->active_cpus > cluster->max_cpus) {
-		first_pass = false;
-		goto again;
-	}
 }
 
 static void __try_to_unisolate(struct cluster_data *cluster,

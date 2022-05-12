@@ -713,9 +713,6 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 
 	kobject_init(&q->kobj, &blk_queue_ktype);
 
-#ifdef CONFIG_BLK_DEV_IO_TRACE
-	mutex_init(&q->blk_trace_mutex);
-#endif
 	mutex_init(&q->sysfs_lock);
 	spin_lock_init(&q->__queue_lock);
 
@@ -1295,6 +1292,9 @@ static struct request *blk_old_get_request(struct request_queue *q, int rw,
 	/* q->queue_lock is unlocked at this point */
 	rq->__data_len = 0;
 	rq->__sector = (sector_t) -1;
+#ifdef CONFIG_PFK
+	rq->__dun = 0;
+#endif
 	rq->bio = rq->biotail = NULL;
 	return rq;
 }
@@ -1536,7 +1536,7 @@ bool bio_attempt_front_merge(struct request_queue *q, struct request *req,
 	req->bio = bio;
 
 #ifdef CONFIG_PFK
-	WARN_ON(req->__dun || bio->bi_iter.bi_dun);
+	req->__dun = bio->bi_iter.bi_dun;
 #endif
 	req->__sector = bio->bi_iter.bi_sector;
 	req->__data_len += bio->bi_iter.bi_size;
@@ -3617,7 +3617,7 @@ int __init blk_dev_init(void)
  * them when printing them out.
  */
 ssize_t
-blk_latency_hist_show(char* name, struct io_latency_state *s, char *buf,
+blk_latency_hist_show(char *name, struct io_latency_state *s, char *buf,
 		int buf_size)
 {
 	int i;
@@ -3626,31 +3626,29 @@ blk_latency_hist_show(char* name, struct io_latency_state *s, char *buf,
 	int pct;
 	u_int64_t average;
 
-       num_elem = s->latency_elems;
-       if (num_elem > 0) {
-	       average = div64_u64(s->latency_sum, s->latency_elems);
-	       bytes_written += scnprintf(buf + bytes_written,
-			       buf_size - bytes_written,
-			       "IO svc_time %s Latency Histogram (n = %llu,"
-			       " average = %llu):\n", name, num_elem, average);
-	       for (i = 0;
-		    i < ARRAY_SIZE(latency_x_axis_us);
-		    i++) {
-		       elem = s->latency_y_axis[i];
-		       pct = div64_u64(elem * 100, num_elem);
-		       bytes_written += scnprintf(buf + bytes_written,
-				       PAGE_SIZE - bytes_written,
-				       "\t< %6lluus%15llu%15d%%\n",
-				       latency_x_axis_us[i],
-				       elem, pct);
-	       }
-	       /* Last element in y-axis table is overflow */
-	       elem = s->latency_y_axis[i];
-	       pct = div64_u64(elem * 100, num_elem);
-	       bytes_written += scnprintf(buf + bytes_written,
-			       PAGE_SIZE - bytes_written,
-			       "\t>=%6lluus%15llu%15d%%\n",
-			       latency_x_axis_us[i - 1], elem, pct);
+	num_elem = s->latency_elems;
+	if (num_elem > 0) {
+		average = div64_u64(s->latency_sum, s->latency_elems);
+		bytes_written += scnprintf(buf + bytes_written,
+			buf_size - bytes_written, "IO svc_time %s Latency"
+			" Histogram (n = %llu, average = %llu):\n", name,
+			num_elem, average);
+		for (i = 0; i < ARRAY_SIZE(latency_x_axis_us); i++) {
+			elem = s->latency_y_axis[i];
+			pct = div64_u64(elem * 100, num_elem);
+			bytes_written += scnprintf(buf + bytes_written,
+					PAGE_SIZE - bytes_written,
+					"\t< %6lluus%15llu%15d%%\n",
+					latency_x_axis_us[i],
+					elem, pct);
+		}
+		/* Last element in y-axis table is overflow */
+		elem = s->latency_y_axis[i];
+		pct = div64_u64(elem * 100, num_elem);
+		bytes_written += scnprintf(buf + bytes_written,
+				PAGE_SIZE - bytes_written,
+				"\t>=%6lluus%15llu%15d%%\n",
+				latency_x_axis_us[i - 1], elem, pct);
 	}
 
 	return bytes_written;

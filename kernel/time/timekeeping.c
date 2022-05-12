@@ -988,8 +988,9 @@ static int scale64_check_overflow(u64 mult, u64 div, u64 *base)
 	    ((int)sizeof(u64)*8 - fls64(mult) < fls64(rem)))
 		return -EOVERFLOW;
 	tmp *= mult;
+	rem *= mult;
 
-	rem = div64_u64(rem * mult, div);
+	do_div(rem, div);
 	*base = tmp + rem;
 	return 0;
 }
@@ -2404,14 +2405,4 @@ void xtime_update(unsigned long ticks)
 	do_timer(ticks);
 	write_sequnlock(&jiffies_lock);
 	update_wall_time();
-}
-
-/**
- * get_total_sleep_time_nsec() - returns total sleep time in nanoseconds
- */
-s64 get_total_sleep_time_nsec(void)
-{
-	struct timekeeper *tk = &tk_core.timekeeper;
-
-	return ktime_to_ns(tk->offs_boot);
 }

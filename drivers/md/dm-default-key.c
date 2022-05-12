@@ -106,11 +106,12 @@ static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	 * and we must set discard_zeroes_data_unsupported.
 	 */
 	ti->num_discard_bios = 1;
+	ti->discard_zeroes_data_unsupported = true;
 
 	/*
 	 * It's unclear whether WRITE_SAME would work with inline encryption; it
 	 * would depend on whether the hardware duplicates the data before or
-	 * after encryption.  But since the internal storage in some  devices
+	 * after encryption.  But since the internal storage in "muskie" devices
 	 * (MSM8998-based) doesn't claim to support WRITE_SAME anyway, we don't
 	 * currently have a way to test it.  Leave it disabled it for now.
 	 */
@@ -221,4 +222,4 @@ MODULE_AUTHOR("Paul Lawrence <paullawrence@google.com>");
 MODULE_AUTHOR("Paul Crowley <paulcrowley@google.com>");
 MODULE_AUTHOR("Eric Biggers <ebiggers@google.com>");
 MODULE_DESCRIPTION(DM_NAME " target for encrypting filesystem metadata");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

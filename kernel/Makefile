@@ -62,6 +62,7 @@ obj-$(CONFIG_UID16) += uid16.o
 obj-$(CONFIG_MODULES) += module.o
 obj-$(CONFIG_MODULE_SIG) += module_signing.o
 obj-$(CONFIG_KALLSYMS) += kallsyms.o
+obj-$(CONFIG_BLDR_DEBUG_LOG) += kdebuginfo.o
 obj-$(CONFIG_BSD_PROCESS_ACCT) += acct.o
 obj-$(CONFIG_KEXEC_CORE) += kexec_core.o
 obj-$(CONFIG_KEXEC) += kexec.o
@@ -75,8 +76,8 @@ obj-$(CONFIG_CPUSETS) += cpuset.o
 obj-$(CONFIG_UTS_NS) += utsname.o
 obj-$(CONFIG_USER_NS) += user_namespace.o
 obj-$(CONFIG_PID_NS) += pid_namespace.o
+obj-$(CONFIG_DRV_NS) += drv_namespace.o
 obj-$(CONFIG_IKCONFIG) += configs.o
-obj-$(CONFIG_IKHEADERS) += kheaders.o
 obj-$(CONFIG_SMP) += stop_machine.o
 obj-$(CONFIG_KPROBES_SANITY_TEST) += test_kprobes.o
 obj-$(CONFIG_AUDIT) += audit.o auditfilter.o
@@ -126,25 +127,10 @@ $(obj)/configs.o: $(obj)/config_data.h
 # config_data.h contains the same information as ikconfig.h but gzipped.
 # Info from config_data can be extracted from /proc/config*
 targets += config_data.gz
-ifeq ($(CONFIG_MACH_XIAOMI_D5X),y)
-$(obj)/config_data.gz: arch/arm64/configs/polaris_stock_defconfig FORCE
-else ifeq ($(CONFIG_MACH_XIAOMI_E1N),y)
-$(obj)/config_data.gz: arch/arm64/configs/dipper_stock_defconfig FORCE
-else ifeq ($(CONFIG_MACH_XIAOMI_E10),y)
-$(obj)/config_data.gz: arch/arm64/configs/beryllium_stock_defconfig FORCE
-endif
+$(obj)/config_data.gz: $(KCONFIG_CONFIG) FORCE
 	$(call if_changed,gzip)
 
       filechk_ikconfiggz = (echo "static const char kernel_config_data[] __used = MAGIC_START"; cat $< | scripts/basic/bin2c; echo "MAGIC_END;")
 targets += config_data.h
 $(obj)/config_data.h: $(obj)/config_data.gz FORCE
 	$(call filechk,ikconfiggz)
-
-$(obj)/kheaders.o: $(obj)/kheaders_data.tar.xz
-
-quiet_cmd_genikh = CHK     $(obj)/kheaders_data.tar.xz
-cmd_genikh = $(CONFIG_SHELL) $(srctree)/kernel/gen_kheaders.sh $@
-$(obj)/kheaders_data.tar.xz: FORCE
-	$(call cmd,genikh)
-
-clean-files := kheaders_data.tar.xz kheaders.md5

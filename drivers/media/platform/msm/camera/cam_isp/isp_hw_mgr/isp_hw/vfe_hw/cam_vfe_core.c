@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -76,8 +76,6 @@ int cam_vfe_put_evt_payload(void             *core_info,
 {
 	struct cam_vfe_hw_core_info        *vfe_core_info = core_info;
 	unsigned long                       flags;
-	uint32_t  *ife_irq_regs = NULL;
-	uint32_t   status_reg0, status_reg1;
 
 	if (!core_info) {
 		CAM_ERR(CAM_ISP, "Invalid param core_info NULL");
@@ -86,16 +84,6 @@ int cam_vfe_put_evt_payload(void             *core_info,
 	if (*evt_payload == NULL) {
 		CAM_ERR(CAM_ISP, "No payload to put");
 		return -EINVAL;
-	}
-
-	ife_irq_regs = (*evt_payload)->irq_reg_val;
-	status_reg0 = ife_irq_regs[CAM_IFE_IRQ_CAMIF_REG_STATUS0];
-	status_reg1 = ife_irq_regs[CAM_IFE_IRQ_CAMIF_REG_STATUS1];
-
-	if (status_reg0 || status_reg1) {
-		CAM_DBG(CAM_ISP, "status0 0x%x status1 0x%x",
-			status_reg0, status_reg1);
-		return 0;
 	}
 
 	spin_lock_irqsave(&vfe_core_info->spin_lock, flags);
@@ -652,10 +640,10 @@ int cam_vfe_stop(void *hw_priv, void *stop_args, uint32_t arg_size)
 		cam_irq_controller_unsubscribe_irq(
 			core_info->vfe_irq_controller, isp_res->irq_handle);
 		isp_res->irq_handle = 0;
-
 		rc = core_info->vfe_top->hw_ops.stop(
 			core_info->vfe_top->top_priv, isp_res,
 			sizeof(struct cam_isp_resource_node));
+
 	} else if (isp_res->res_type == CAM_ISP_RESOURCE_VFE_OUT) {
 		rc = core_info->vfe_bus->hw_ops.stop(isp_res, NULL, 0);
 	} else {
@@ -708,7 +696,6 @@ int cam_vfe_process_cmd(void *hw_priv, uint32_t cmd_type,
 	case CAM_ISP_HW_CMD_CLOCK_UPDATE:
 	case CAM_ISP_HW_CMD_BW_UPDATE:
 	case CAM_ISP_HW_CMD_BW_CONTROL:
-	case CAM_ISP_HW_CMD_GET_IRQ_REGISTER_DUMP:
 		rc = core_info->vfe_top->hw_ops.process_cmd(
 			core_info->vfe_top->top_priv, cmd_type, cmd_args,
 			arg_size);

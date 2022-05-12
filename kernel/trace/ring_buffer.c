@@ -416,16 +416,14 @@ struct rb_event_info {
 
 /*
  * Used for which event context the event is in.
- *  TRANSITION = 0
- *  NMI     = 1
- *  IRQ     = 2
- *  SOFTIRQ = 3
- *  NORMAL  = 4
+ *  NMI     = 0
+ *  IRQ     = 1
+ *  SOFTIRQ = 2
+ *  NORMAL  = 3
  *
  * See trace_recursive_lock() comment below for more details.
  */
 enum {
-	RB_CTX_TRANSITION,
 	RB_CTX_NMI,
 	RB_CTX_IRQ,
 	RB_CTX_SOFTIRQ,
@@ -485,7 +483,9 @@ struct ring_buffer {
 
 	struct ring_buffer_per_cpu	**buffers;
 
-	struct hlist_node		node;
+#ifdef CONFIG_HOTPLUG_CPU
+	struct notifier_block		cpu_notify;
+#endif
 	u64				(*clock)(void);
 
 	struct rb_irq_work		irq_work;
@@ -1137,15 +1137,12 @@ static int __rb_allocate_pages(long nr_pages, struct list_head *pages, int cpu)
 	struct buffer_page *bpage, *tmp;
 	long i;
 
+	/* Bail out before going to OOM */
+	current->flags |= PF_DUMPCORE;
 	for (i = 0; i < nr_pages; i++) {
 		struct page *page;
-		/*
-		 * __GFP_NORETRY flag makes sure that the allocation fails
-		 * gracefully without invoking oom-killer and the system is
-		 * not destabilized.
-		 */
 		bpage = kzalloc_node(ALIGN(sizeof(*bpage), cache_line_size()),
-				    GFP_KERNEL | __GFP_NORETRY,
+				    GFP_KERNEL,
 				    cpu_to_node(cpu));
 		if (!bpage)
 			goto free_pages;
@@ -1153,16 +1150,18 @@ static int __rb_allocate_pages(long nr_pages, struct list_head *pages, int cpu)
 		list_add(&bpage->list, pages);
 
 		page = alloc_pages_node(cpu_to_node(cpu),
-					GFP_KERNEL | __GFP_NORETRY, 0);
+					GFP_KERNEL, 0);
 		if (!page)
 			goto free_pages;
 		bpage->page = page_address(page);
 		rb_init_page(bpage->page);
 	}
 
+	current->flags &= ~PF_DUMPCORE;
 	return 0;
 
 free_pages:
+	current->flags &= ~PF_DUMPCORE;
 	list_for_each_entry_safe(bpage, tmp, pages, list) {
 		list_del_init(&bpage->list);
 		free_buffer_page(bpage);
@@ -1278,6 +1277,11 @@ static void rb_free_cpu_buffer(struct ring_buffer_per_cpu *cpu_buffer)
 	kfree(cpu_buffer);
 }
 
+#ifdef CONFIG_HOTPLUG_CPU
+static int rb_cpu_notify(struct notifier_block *self,
+			 unsigned long action, void *hcpu);
+#endif
+
 /**
  * __ring_buffer_alloc - allocate a new ring_buffer
  * @size: the size in bytes per cpu that is needed.
@@ -1295,7 +1299,6 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 	long nr_pages;
 	int bsize;
 	int cpu;
-	int ret;
 
 	/* keep it in its own cache line */
 	buffer = kzalloc(ALIGN(sizeof(*buffer), cache_line_size()),
@@ -1303,7 +1306,7 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 	if (!buffer)
 		return NULL;
 
-	if (!zalloc_cpumask_var(&buffer->cpumask, GFP_KERNEL))
+	if (!alloc_cpumask_var(&buffer->cpumask, GFP_KERNEL))
 		goto fail_free_buffer;
 
 	nr_pages = DIV_ROUND_UP(size, BUF_PAGE_SIZE);
@@ -1318,6 +1321,17 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 	if (nr_pages < 2)
 		nr_pages = 2;
 
+	/*
+	 * In case of non-hotplug cpu, if the ring-buffer is allocated
+	 * in early initcall, it will not be notified of secondary cpus.
+	 * In that off case, we need to allocate for all possible cpus.
+	 */
+#ifdef CONFIG_HOTPLUG_CPU
+	cpu_notifier_register_begin();
+	cpumask_copy(buffer->cpumask, cpu_online_mask);
+#else
+	cpumask_copy(buffer->cpumask, cpu_possible_mask);
+#endif
 	buffer->cpus = nr_cpu_ids;
 
 	bsize = sizeof(void *) * nr_cpu_ids;
@@ -1326,15 +1340,19 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 	if (!buffer->buffers)
 		goto fail_free_cpumask;
 
-	cpu = raw_smp_processor_id();
-	cpumask_set_cpu(cpu, buffer->cpumask);
-	buffer->buffers[cpu] = rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
-	if (!buffer->buffers[cpu])
-		goto fail_free_buffers;
+	for_each_buffer_cpu(buffer, cpu) {
+		buffer->buffers[cpu] =
+			rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+		if (!buffer->buffers[cpu])
+			goto fail_free_buffers;
+	}
 
-	ret = cpuhp_state_add_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node);
-	if (ret < 0)
-		goto fail_free_buffers;
+#ifdef CONFIG_HOTPLUG_CPU
+	buffer->cpu_notify.notifier_call = rb_cpu_notify;
+	buffer->cpu_notify.priority = 0;
+	__register_cpu_notifier(&buffer->cpu_notify);
+	cpu_notifier_register_done();
+#endif
 
 	mutex_init(&buffer->mutex);
 
@@ -1349,6 +1367,9 @@ struct ring_buffer *__ring_buffer_alloc(unsigned long size, unsigned flags,
 
  fail_free_cpumask:
 	free_cpumask_var(buffer->cpumask);
+#ifdef CONFIG_HOTPLUG_CPU
+	cpu_notifier_register_done();
+#endif
 
  fail_free_buffer:
 	kfree(buffer);
@@ -1365,10 +1386,17 @@ ring_buffer_free(struct ring_buffer *buffer)
 {
 	int cpu;
 
-	cpuhp_state_remove_instance(CPUHP_TRACE_RB_PREPARE, &buffer->node);
+#ifdef CONFIG_HOTPLUG_CPU
+	cpu_notifier_register_begin();
+	__unregister_cpu_notifier(&buffer->cpu_notify);
+#endif
 
 	for_each_buffer_cpu(buffer, cpu)
 		rb_free_cpu_buffer(buffer->buffers[cpu]);
+
+#ifdef CONFIG_HOTPLUG_CPU
+	cpu_notifier_register_done();
+#endif
 
 	kfree(buffer->buffers);
 	free_cpumask_var(buffer->cpumask);
@@ -1621,18 +1649,18 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size,
 {
 	struct ring_buffer_per_cpu *cpu_buffer;
 	unsigned long nr_pages;
-	int cpu, err;
+	int cpu, err = 0;
 
 	/*
 	 * Always succeed at resizing a non-existent buffer:
 	 */
 	if (!buffer)
-		return 0;
+		return size;
 
 	/* Make sure the requested buffer exists */
 	if (cpu_id != RING_BUFFER_ALL_CPUS &&
 	    !cpumask_test_cpu(cpu_id, buffer->cpumask))
-		return 0;
+		return size;
 
 	nr_pages = DIV_ROUND_UP(size, BUF_PAGE_SIZE);
 
@@ -1772,7 +1800,7 @@ int ring_buffer_resize(struct ring_buffer *buffer, unsigned long size,
 	}
 
 	mutex_unlock(&buffer->mutex);
-	return 0;
+	return size;
 
  out_err:
 	for_each_buffer_cpu(buffer, cpu) {
@@ -2550,10 +2578,10 @@ rb_wakeups(struct ring_buffer *buffer, struct ring_buffer_per_cpu *cpu_buffer)
  * a bit of overhead in something as critical as function tracing,
  * we use a bitmask trick.
  *
- *  bit 1 =  NMI context
- *  bit 2 =  IRQ context
- *  bit 3 =  SoftIRQ context
- *  bit 4 =  normal context.
+ *  bit 0 =  NMI context
+ *  bit 1 =  IRQ context
+ *  bit 2 =  SoftIRQ context
+ *  bit 3 =  normal context.
  *
  * This works because this is the order of contexts that can
  * preempt other contexts. A SoftIRQ never preempts an IRQ
@@ -2576,30 +2604,6 @@ rb_wakeups(struct ring_buffer *buffer, struct ring_buffer_per_cpu *cpu_buffer)
  * The least significant bit can be cleared this way, and it
  * just so happens that it is the same bit corresponding to
  * the current context.
- *
- * Now the TRANSITION bit breaks the above slightly. The TRANSITION bit
- * is set when a recursion is detected at the current context, and if
- * the TRANSITION bit is already set, it will fail the recursion.
- * This is needed because there's a lag between the changing of
- * interrupt context and updating the preempt count. In this case,
- * a false positive will be found. To handle this, one extra recursion
- * is allowed, and this is done by the TRANSITION bit. If the TRANSITION
- * bit is already set, then it is considered a recursion and the function
- * ends. Otherwise, the TRANSITION bit is set, and that bit is returned.
- *
- * On the trace_recursive_unlock(), the TRANSITION bit will be the first
- * to be cleared. Even if it wasn't the context that set it. That is,
- * if an interrupt comes in while NORMAL bit is set and the ring buffer
- * is called before preempt_count() is updated, since the check will
- * be on the NORMAL bit, the TRANSITION bit will then be set. If an
- * NMI then comes in, it will set the NMI bit, but when the NMI code
- * does the trace_recursive_unlock() it will clear the TRANSTION bit
- * and leave the NMI bit set. But this is fine, because the interrupt
- * code that set the TRANSITION bit will then clear the NMI bit when it
- * calls trace_recursive_unlock(). If another NMI comes in, it will
- * set the TRANSITION bit and continue.
- *
- * Note: The TRANSITION bit only handles a single transition between context.
  */
 
 static __always_inline int
@@ -2618,16 +2622,8 @@ trace_recursive_lock(struct ring_buffer_per_cpu *cpu_buffer)
 	} else
 		bit = RB_CTX_NORMAL;
 
-	if (unlikely(val & (1 << bit))) {
-		/*
-		 * It is possible that this was called by transitioning
-		 * between interrupt context, and preempt_count() has not
-		 * been updated yet. In this case, use the TRANSITION bit.
-		 */
-		bit = RB_CTX_TRANSITION;
-		if (val & (1 << bit))
-			return 1;
-	}
+	if (unlikely(val & (1 << bit)))
+		return 1;
 
 	val |= (1 << bit);
 	cpu_buffer->current_context = val;
@@ -4671,48 +4667,62 @@ int ring_buffer_read_page(struct ring_buffer *buffer,
 }
 EXPORT_SYMBOL_GPL(ring_buffer_read_page);
 
-/*
- * We only allocate new buffers, never free them if the CPU goes down.
- * If we were to free the buffer, then the user would lose any trace that was in
- * the buffer.
- */
-int trace_rb_cpu_prepare(unsigned int cpu, struct hlist_node *node)
+#ifdef CONFIG_HOTPLUG_CPU
+static int rb_cpu_notify(struct notifier_block *self,
+			 unsigned long action, void *hcpu)
 {
-	struct ring_buffer *buffer;
+	struct ring_buffer *buffer =
+		container_of(self, struct ring_buffer, cpu_notify);
+	long cpu = (long)hcpu;
 	long nr_pages_same;
 	int cpu_i;
 	unsigned long nr_pages;
 
-	buffer = container_of(node, struct ring_buffer, node);
-	if (cpumask_test_cpu(cpu, buffer->cpumask))
-		return 0;
+	switch (action) {
+	case CPU_UP_PREPARE:
+	case CPU_UP_PREPARE_FROZEN:
+		if (cpumask_test_cpu(cpu, buffer->cpumask))
+			return NOTIFY_OK;
 
-	nr_pages = 0;
-	nr_pages_same = 1;
-	/* check if all cpu sizes are same */
-	for_each_buffer_cpu(buffer, cpu_i) {
-		/* fill in the size from first enabled cpu */
-		if (nr_pages == 0)
-			nr_pages = buffer->buffers[cpu_i]->nr_pages;
-		if (nr_pages != buffer->buffers[cpu_i]->nr_pages) {
-			nr_pages_same = 0;
-			break;
+		nr_pages = 0;
+		nr_pages_same = 1;
+		/* check if all cpu sizes are same */
+		for_each_buffer_cpu(buffer, cpu_i) {
+			/* fill in the size from first enabled cpu */
+			if (nr_pages == 0)
+				nr_pages = buffer->buffers[cpu_i]->nr_pages;
+			if (nr_pages != buffer->buffers[cpu_i]->nr_pages) {
+				nr_pages_same = 0;
+				break;
+			}
 		}
+		/* allocate minimum pages, user can later expand it */
+		if (!nr_pages_same)
+			nr_pages = 2;
+		buffer->buffers[cpu] =
+			rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
+		if (!buffer->buffers[cpu]) {
+			WARN(1, "failed to allocate ring buffer on CPU %ld\n",
+			     cpu);
+			return NOTIFY_OK;
+		}
+		smp_wmb();
+		cpumask_set_cpu(cpu, buffer->cpumask);
+		break;
+	case CPU_DOWN_PREPARE:
+	case CPU_DOWN_PREPARE_FROZEN:
+		/*
+		 * Do nothing.
+		 *  If we were to free the buffer, then the user would
+		 *  lose any trace that was in the buffer.
+		 */
+		break;
+	default:
+		break;
 	}
-	/* allocate minimum pages, user can later expand it */
-	if (!nr_pages_same)
-		nr_pages = 2;
-	buffer->buffers[cpu] =
-		rb_allocate_cpu_buffer(buffer, nr_pages, cpu);
-	if (!buffer->buffers[cpu]) {
-		WARN(1, "failed to allocate ring buffer on CPU %u\n",
-		     cpu);
-		return -ENOMEM;
-	}
-	smp_wmb();
-	cpumask_set_cpu(cpu, buffer->cpumask);
-	return 0;
+	return NOTIFY_OK;
 }
+#endif
 
 #ifdef CONFIG_RING_BUFFER_STARTUP_TEST
 /*

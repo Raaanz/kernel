@@ -65,29 +65,9 @@ struct vib_ldo_chip {
 	bool			disable_overdrive;
 };
 
-static inline int qpnp_vib_ldo_poll_status(struct vib_ldo_chip *chip)
-{
-	unsigned int val;
-	int ret;
-
-	ret = regmap_read_poll_timeout(chip->regmap,
-			chip->base + QPNP_VIB_LDO_REG_STATUS1, val,
-			val & QPNP_VIB_LDO_VREG_READY, 100, 1000);
-	if (ret < 0) {
-		pr_err("Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
-			val, ret);
-
-		/* Keep VIB_LDO disabled */
-		regmap_update_bits(chip->regmap,
-			chip->base + QPNP_VIB_LDO_REG_EN_CTL,
-			QPNP_VIB_LDO_EN, 0);
-	}
-
-	return ret;
-}
-
 static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 {
+	unsigned int val;
 	u32 vlevel;
 	u8 reg[2];
 	int ret;
@@ -106,9 +86,13 @@ static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 	}
 
 	if (chip->vib_enabled) {
-		ret = qpnp_vib_ldo_poll_status(chip);
+		ret = regmap_read_poll_timeout(chip->regmap,
+					chip->base + QPNP_VIB_LDO_REG_STATUS1,
+					val, val & QPNP_VIB_LDO_VREG_READY,
+					100, 1000);
 		if (ret < 0) {
-			pr_err("Vibrator LDO status polling timedout\n");
+			pr_err("Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
+				val, ret);
 			return ret;
 		}
 	}
@@ -119,6 +103,7 @@ static int qpnp_vib_ldo_set_voltage(struct vib_ldo_chip *chip, int new_uV)
 
 static inline int qpnp_vib_ldo_enable(struct vib_ldo_chip *chip, bool enable)
 {
+	unsigned int val;
 	int ret;
 
 	if (chip->vib_enabled == enable)
@@ -135,9 +120,13 @@ static inline int qpnp_vib_ldo_enable(struct vib_ldo_chip *chip, bool enable)
 	}
 
 	if (enable) {
-		ret = qpnp_vib_ldo_poll_status(chip);
+		ret = regmap_read_poll_timeout(chip->regmap,
+					chip->base + QPNP_VIB_LDO_REG_STATUS1,
+					val, val & QPNP_VIB_LDO_VREG_READY,
+					100, 1000);
 		if (ret < 0) {
-			pr_err("Vibrator LDO status polling timedout\n");
+			pr_err("Vibrator LDO vreg_ready timeout, status=0x%02x, ret=%d\n",
+				val, ret);
 			return ret;
 		}
 	}
@@ -441,7 +430,6 @@ static int qpnp_vibrator_ldo_suspend(struct device *dev)
 	}
 	hrtimer_cancel(&chip->stop_timer);
 	cancel_work_sync(&chip->vib_work);
-	qpnp_vib_ldo_enable(chip, false);
 	mutex_unlock(&chip->lock);
 
 	return 0;

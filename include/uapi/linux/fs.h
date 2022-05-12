@@ -226,6 +226,7 @@ struct fsxattr {
 #define BLKSECDISCARD _IO(0x12,125)
 #define BLKROTATIONAL _IO(0x12,126)
 #define BLKZEROOUT _IO(0x12,127)
+#define BLKGETSTPART _IO(0x12, 128)
 
 #define BMAP_IOCTL 1		/* obsolete - kept for compatibility */
 #define FIBMAP	   _IO(0x00,1)	/* bmap access */
@@ -302,6 +303,22 @@ struct fscrypt_key {
 	__u8 raw[FS_MAX_KEY_SIZE];
 	__u32 size;
 };
+
+/* file-based verity support */
+
+#define FS_VERITY_ALG_SHA256	1
+#define FS_VERITY_ALG_CRC32	2
+
+struct fsverity_measurement {
+	__u16 digest_algorithm;
+	__u16 digest_size;
+	__u32 reserved1;
+	__u64 reserved2[3];
+	__u8 digest[];
+};
+
+#define FS_IOC_ENABLE_VERITY		_IO('f', 133)
+#define FS_IOC_SET_VERITY_MEASUREMENT	_IOW('f', 134, struct fsverity_measurement)
 
 /*
  * Inode flags (FS_IOC_GETFLAGS / FS_IOC_SETFLAGS)

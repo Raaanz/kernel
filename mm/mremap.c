@@ -212,7 +212,7 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 		new_pmd = alloc_new_pmd(vma->vm_mm, vma, new_addr);
 		if (!new_pmd)
 			break;
-		if (pmd_trans_huge(*old_pmd) || pmd_devmap(*old_pmd)) {
+		if (pmd_trans_huge(*old_pmd)) {
 			if (extent == HPAGE_PMD_SIZE) {
 				bool moved;
 				/* See comment in move_ptes() */
@@ -285,14 +285,6 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	if (!new_vma)
 		return -ENOMEM;
 
-	/* new_vma is returned protected by copy_vma, to prevent speculative
-	 * page fault to be done in the destination area before we move the pte.
-	 * Now, we must also protect the source VMA since we don't want pages
-	 * to be mapped in our back while we are copying the PTEs.
-	 */
-	if (vma != new_vma)
-		vm_raw_write_begin(vma);
-
 	moved_len = move_page_tables(vma, old_addr, new_vma, new_addr, old_len,
 				     need_rmap_locks);
 	if (moved_len < old_len) {
@@ -309,8 +301,6 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 		 */
 		move_page_tables(new_vma, new_addr, vma, old_addr, moved_len,
 				 true);
-		if (vma != new_vma)
-			vm_raw_write_end(vma);
 		vma = new_vma;
 		old_len = new_len;
 		old_addr = new_addr;
@@ -318,10 +308,7 @@ static unsigned long move_vma(struct vm_area_struct *vma,
 	} else {
 		arch_remap(mm, old_addr, old_addr + old_len,
 			   new_addr, new_addr + new_len);
-		if (vma != new_vma)
-			vm_raw_write_end(vma);
 	}
-	vm_raw_write_end(new_vma);
 
 	/* Conceal VM_ACCOUNT so old reservation is not undone */
 	if (vm_flags & VM_ACCOUNT) {
@@ -507,7 +494,6 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	unsigned long ret = -EINVAL;
 	unsigned long charged = 0;
 	bool locked = false;
-	bool downgraded = false;
 
 	if (flags & ~(MREMAP_FIXED | MREMAP_MAYMOVE))
 		return ret;
@@ -541,19 +527,12 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	/*
 	 * Always allow a shrinking remap: that just unmaps
 	 * the unnecessary pages..
-	 * __do_munmap does all the needed commit accounting, and
-	 * downgrades mmap_sem to read if so directed.
+	 * do_munmap does all the needed commit accounting
 	 */
 	if (old_len >= new_len) {
-		int retval;
-
-		retval = __do_munmap(mm, addr+new_len, old_len - new_len, true);
-		if (retval < 0 && old_len != new_len) {
-			ret = retval;
+		ret = do_munmap(mm, addr+new_len, old_len - new_len);
+		if (ret && old_len != new_len)
 			goto out;
-		/* Returning 1 indicates mmap_sem is downgraded to read. */
-		} else if (retval == 1)
-			downgraded = true;
 		ret = addr;
 		goto out;
 	}
@@ -617,10 +596,7 @@ out:
 		vm_unacct_memory(charged);
 		locked = 0;
 	}
-	if (downgraded)
-		up_read(&current->mm->mmap_sem);
-	else
-		up_write(&current->mm->mmap_sem);
+	up_write(&current->mm->mmap_sem);
 	if (locked && new_len > old_len)
 		mm_populate(new_addr + old_len, new_len - old_len);
 	return ret;

@@ -416,8 +416,6 @@ static inline void cpufreq_resume(void) {}
 #define CPUFREQ_START			(2)
 #define CPUFREQ_CREATE_POLICY		(3)
 #define CPUFREQ_REMOVE_POLICY		(4)
-#define CPUFREQ_STOP			(5)
-#define CPUFREQ_INCOMPATIBLE		(6)
 
 /* Govinfo Notifiers */
 #define CPUFREQ_LOAD_CHANGE		(0)
@@ -546,19 +544,6 @@ static inline void cpufreq_policy_apply_limits(struct cpufreq_policy *policy)
 		__cpufreq_driver_target(policy, policy->max, CPUFREQ_RELATION_H);
 	else if (policy->min > policy->cur)
 		__cpufreq_driver_target(policy, policy->min, CPUFREQ_RELATION_L);
-}
-
-static inline unsigned int
-cpufreq_policy_apply_limits_fast(struct cpufreq_policy *policy)
-{
-	unsigned int ret = 0;
-
-	if (policy->max < policy->cur)
-		ret = cpufreq_driver_fast_switch(policy, policy->max);
-	else if (policy->min > policy->cur)
-		ret = cpufreq_driver_fast_switch(policy, policy->min);
-
-	return ret;
 }
 
 /* Governor attribute set */
@@ -945,9 +930,6 @@ unsigned int cpufreq_generic_get(unsigned int cpu);
 int cpufreq_generic_init(struct cpufreq_policy *policy,
 		struct cpufreq_frequency_table *table,
 		unsigned int transition_latency);
-
-void scale_freq_capacity(const cpumask_t *cpus, unsigned long cur_freq,
-			 unsigned long max_freq);
 
 struct sched_domain;
 unsigned long cpufreq_scale_freq_capacity(struct sched_domain *sd, int cpu);

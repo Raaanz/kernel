@@ -9,7 +9,25 @@
 #define CAM_FLASH_MAX_LED_TRIGGERS 3
 #define MAX_OIS_NAME_SIZE 32
 #define CAM_CSIPHY_SECURE_MODE_ENABLED 1
-#define CAM_IR_LED_SUPPORTED
+#define MAX_RAINBOW_CONFIG_SIZE 32
+
+enum rainbow_op_type {
+	RAINBOW_SEQ_READ,
+	RAINBOW_RANDOM_READ,
+	RAINBOW_SEQ_WRITE,
+	RAINBOW_RANDOM_WRITE
+};
+
+struct rainbow_config {
+	enum rainbow_op_type operation;
+	uint32_t             size;
+	uint32_t             reg_addr[MAX_RAINBOW_CONFIG_SIZE];
+	uint32_t             reg_data[MAX_RAINBOW_CONFIG_SIZE];
+} __attribute__((packed));
+
+#define RAINBOW_CONFIG \
+	_IOWR('R', 1, struct rainbow_config)
+
 /**
  * struct cam_sensor_query_cap - capabilities info for sensor
  *
@@ -23,7 +41,6 @@
  * @ois_slot_id      :  OIS slot id which connected to sensor
  * @flash_slot_id    :  Flash slot id which connected to sensor
  * @csiphy_slot_id   :  CSIphy slot id which connected to sensor
- * @irled_slot_id    :  IRLED slot id which connected to sensor
  *
  */
 struct  cam_sensor_query_cap {
@@ -37,7 +54,6 @@ struct  cam_sensor_query_cap {
 	uint32_t        ois_slot_id;
 	uint32_t        flash_slot_id;
 	uint32_t        csiphy_slot_id;
-	uint32_t        ir_led_slot_id;
 } __attribute__((packed));
 
 /**
@@ -103,6 +119,34 @@ struct cam_cmd_i2c_info {
 } __attribute__((packed));
 
 /**
+ * struct cam_cmd_get_ois_data - Contains OIS data read cmd
+ *
+ * @reg_addr            :    register addr to read data from
+ * @reg_data            :    number of bytes to read
+ * @query_size_handle   :    handle to user space query_size address
+ * @query_data_handle   :    handle to user space query_data address
+ */
+struct cam_cmd_get_ois_data {
+	uint32_t           reg_addr;
+	uint32_t           reg_data;
+	uint64_t           query_size_handle;
+	uint64_t           query_data_handle;
+} __attribute__((packed));
+
+/**
+ * struct cam_ois_shift - Contains OIS shift data
+ *
+ * @ois_shift_x         :    shift in x dim
+ * @ois_shift_y         :    shift in y dim
+ * @time_readout        :    time that the shift is read out
+ */
+struct cam_ois_shift {
+	int16_t             ois_shift_x;
+	int16_t             ois_shift_y;
+	int64_t             time_readout;
+} __attribute__((packed));
+
+/**
  * struct cam_ois_opcode - Contains OIS opcode
  *
  * @prog            :    OIS FW prog register address
@@ -150,6 +194,7 @@ struct cam_cmd_ois_info {
  * @data_mask       :   Data mask if only few bits are valid
  * @camera_id       :   Indicates the slot to which camera
  *                      needs to be probed
+ * @fw_update_flag  :   Update OIS firmware
  * @reserved
  */
 struct cam_cmd_probe {
@@ -161,6 +206,7 @@ struct cam_cmd_probe {
 	uint32_t    expected_data;
 	uint32_t    data_mask;
 	uint16_t    camera_id;
+	uint8_t     fw_update_flag;
 	uint16_t    reserved;
 } __attribute__((packed));
 
@@ -203,7 +249,7 @@ struct cam_cmd_power {
  * @ cmd_type        :   Command buffer type
  * @ data_type       :   I2C data type
  * @ addr_type       :   I2C address type
- * @ reserved
+ * @ slave_addr      :   Slave address
  */
 struct i2c_rdwr_header {
 	uint16_t    count;
@@ -211,7 +257,7 @@ struct i2c_rdwr_header {
 	uint8_t     cmd_type;
 	uint8_t     data_type;
 	uint8_t     addr_type;
-	uint16_t    reserved;
+	uint16_t    slave_addr;
 } __attribute__((packed));
 
 /**
@@ -370,7 +416,6 @@ struct cam_sensor_acquire_dev {
 	uint32_t    handle_type;
 	uint32_t    reserved;
 	uint64_t    info_handle;
-	uint32_t    operation_mode;
 } __attribute__((packed));
 
 /**
@@ -477,30 +522,5 @@ struct cam_flash_query_cap_info {
 	uint32_t    max_duration_flash[CAM_FLASH_MAX_LED_TRIGGERS];
 	uint32_t    max_current_torch[CAM_FLASH_MAX_LED_TRIGGERS];
 } __attribute__ ((packed));
-
-/**
- * struct cam_ir_led_query_cap  :  capabilities info for ir_led
- *
- * @slot_info           :  Indicates about the slotId or cell Index
- *
- */
-struct cam_ir_led_query_cap_info {
-	uint32_t    slot_info;
-} __attribute__ ((packed));
-
-/**
- * struct cam_ir_ledset_on_off : led turn on/off command buffer
- *
- * @opcode             :   command buffer opcodes
- * @cmd_type           :   command buffer operation type
- * @ir_led_intensity   :   ir led intensity level
- *
- */
-struct cam_ir_led_set_on_off {
-	uint16_t    reserved;
-	uint8_t     opcode;
-	uint8_t     cmd_type;
-	uint32_t    ir_led_intensity;
-} __attribute__((packed));
 
 #endif

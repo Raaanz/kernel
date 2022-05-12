@@ -135,13 +135,9 @@ static bool fuse_block_alloc(struct fuse_conn *fc, bool for_background)
 
 static void fuse_drop_waiting(struct fuse_conn *fc)
 {
-	/*
-	 * lockess check of fc->connected is okay, because atomic_dec_and_test()
-	 * provides a memory barrier mached with the one in fuse_wait_aborted()
-	 * to ensure no wake-up is missed.
-	 */
-	if (atomic_dec_and_test(&fc->num_waiting) &&
-	    !READ_ONCE(fc->connected)) {
+	if (fc->connected) {
+		atomic_dec(&fc->num_waiting);
+	} else if (atomic_dec_and_test(&fc->num_waiting)) {
 		/* wake up aborters */
 		wake_up_all(&fc->blocked_waitq);
 	}
@@ -835,6 +831,7 @@ static int fuse_check_page(struct page *page)
 {
 	if (page_mapcount(page) ||
 	    page->mapping != NULL ||
+	    page_count(page) != 1 ||
 	    (page->flags & PAGE_FLAGS_CHECK_AT_PREP &
 	     ~(1 << PG_locked |
 	       1 << PG_referenced |
@@ -856,16 +853,15 @@ static int fuse_try_move_page(struct fuse_copy_state *cs, struct page **pagep)
 	struct page *newpage;
 	struct pipe_buffer *buf = cs->pipebufs;
 
-	get_page(oldpage);
 	err = unlock_request(cs->req);
 	if (err)
-		goto out_put_old;
+		return err;
 
 	fuse_copy_finish(cs);
 
 	err = pipe_buf_confirm(cs->pipe, buf);
 	if (err)
-		goto out_put_old;
+		return err;
 
 	BUG_ON(!cs->nr_segs);
 	cs->currbuf = buf;
@@ -905,7 +901,7 @@ static int fuse_try_move_page(struct fuse_copy_state *cs, struct page **pagep)
 	err = replace_page_cache_page(oldpage, newpage, GFP_KERNEL);
 	if (err) {
 		unlock_page(newpage);
-		goto out_put_old;
+		return err;
 	}
 
 	get_page(newpage);
@@ -924,19 +920,14 @@ static int fuse_try_move_page(struct fuse_copy_state *cs, struct page **pagep)
 	if (err) {
 		unlock_page(newpage);
 		put_page(newpage);
-		goto out_put_old;
+		return err;
 	}
 
 	unlock_page(oldpage);
-	/* Drop ref for ap->pages[] array */
 	put_page(oldpage);
 	cs->len = 0;
 
-	err = 0;
-out_put_old:
-	/* Drop ref obtained in this function */
-	put_page(oldpage);
-	return err;
+	return 0;
 
 out_fallback_unlock:
 	unlock_page(newpage);
@@ -945,10 +936,10 @@ out_fallback:
 	cs->offset = buf->offset;
 
 	err = lock_request(cs->req);
-	if (!err)
-		err = 1;
+	if (err)
+		return err;
 
-	goto out_put_old;
+	return 1;
 }
 
 static int fuse_ref_page(struct fuse_copy_state *cs, struct page *page,
@@ -960,16 +951,14 @@ static int fuse_ref_page(struct fuse_copy_state *cs, struct page *page,
 	if (cs->nr_segs == cs->pipe->buffers)
 		return -EIO;
 
-	get_page(page);
 	err = unlock_request(cs->req);
-	if (err) {
-		put_page(page);
+	if (err)
 		return err;
-	}
 
 	fuse_copy_finish(cs);
 
 	buf = cs->pipebufs;
+	get_page(page);
 	buf->page = page;
 	buf->offset = offset;
 	buf->len = count;
@@ -2194,8 +2183,6 @@ EXPORT_SYMBOL_GPL(fuse_abort_conn);
 
 void fuse_wait_aborted(struct fuse_conn *fc)
 {
-	/* matches implicit memory barrier in fuse_drop_waiting() */
-	smp_mb();
 	wait_event(fc->blocked_waitq, atomic_read(&fc->num_waiting) == 0);
 }
 

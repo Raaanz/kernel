@@ -147,25 +147,6 @@ struct sde_crtc_event {
 	void (*cb_func)(struct drm_crtc *crtc, void *usr);
 	void *usr;
 };
-/**
- * struct sde_crtc_fps_info - structure for measuring fps periodicity
- * @frame_count		: Total frames during configured periodic duration
- * @last_sampled_time_us: Stores the last ktime in microsecs when fps
- *                        was calculated
- * @measured_fps	: Last measured fps value
- * @fps_periodic_duration	: Duration in milliseconds to measure the fps.
- *                                Default value is 1 second.
- * @time_buf		: Buffer for storing ktime of the commits
- * @next_time_index	: index into time_buf for storing ktime for next commit
- */
-struct sde_crtc_fps_info {
-	u32 frame_count;
-	ktime_t last_sampled_time_us;
-	u32 measured_fps;
-	u32 fps_periodic_duration;
-	ktime_t *time_buf;
-	u32 next_time_index;
-};
 
 /*
  * Maximum number of free event structures to cache
@@ -243,7 +224,7 @@ struct sde_crtc {
 	u32 num_ctls;
 	u32 num_mixers;
 	bool mixers_swapped;
-	struct sde_crtc_mixer mixers[MAX_MIXERS_PER_CRTC];
+	struct sde_crtc_mixer mixers[CRTC_DUAL_MIXERS];
 
 	struct drm_pending_vblank_event *event;
 	u32 vsync_count;
@@ -262,7 +243,6 @@ struct sde_crtc {
 	u64 play_count;
 	ktime_t vblank_cb_time;
 	ktime_t vblank_last_cb_time;
-	struct sde_crtc_fps_info fps_info;
 	struct device *sysfs_dev;
 	struct kernfs_node *vsync_event_sf;
 	bool vblank_requested;
@@ -293,7 +273,7 @@ struct sde_crtc {
 	spinlock_t event_lock;
 	bool misr_enable;
 	u32 misr_frame_count;
-	u32 misr_data[MAX_MIXERS_PER_CRTC];
+	u32 misr_data[CRTC_DUAL_MIXERS];
 
 	bool enable_sui_enhancement;
 
@@ -418,8 +398,8 @@ struct sde_crtc_state {
 
 	bool is_ppsplit;
 	struct sde_rect crtc_roi;
-	struct sde_rect lm_bounds[MAX_MIXERS_PER_CRTC];
-	struct sde_rect lm_roi[MAX_MIXERS_PER_CRTC];
+	struct sde_rect lm_bounds[CRTC_DUAL_MIXERS];
+	struct sde_rect lm_roi[CRTC_DUAL_MIXERS];
 	struct msm_roi_list user_roi_list;
 
 	struct msm_property_state property_state;
@@ -443,7 +423,7 @@ struct sde_crtc_state {
 };
 
 enum sde_crtc_irq_state {
-	IRQ_ENABLING,
+	IRQ_NOINIT,
 	IRQ_ENABLED,
 	IRQ_DISABLING,
 	IRQ_DISABLED,
@@ -496,7 +476,8 @@ static inline int sde_crtc_get_mixer_width(struct sde_crtc *sde_crtc,
 	if (cstate->num_ds_enabled)
 		mixer_width = cstate->ds_cfg[0].lm_width;
 	else
-		mixer_width = mode->hdisplay / sde_crtc->num_mixers;
+		mixer_width = (sde_crtc->num_mixers == CRTC_DUAL_MIXERS ?
+			mode->hdisplay / CRTC_DUAL_MIXERS : mode->hdisplay);
 
 	return mixer_width;
 }

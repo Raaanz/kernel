@@ -1,5 +1,4 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2018 XiaoMi, Inc.
+/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -265,10 +264,9 @@ struct qpnp_adc_tm_sensor {
 	bool				thermal_node;
 	uint32_t			scale_type;
 	struct list_head		thr_list;
-	int				high_thr_triggered;
-	int				low_thr_triggered;
-	int				tmp_high_thr_triggered;
-	int				tmp_low_thr_triggered;
+	bool				high_thr_triggered;
+	bool				low_thr_triggered;
+	int				emul_temperature;
 };
 
 struct qpnp_adc_tm_chip {
@@ -365,7 +363,6 @@ static struct qpnp_adc_tm_reverse_scale_fn adc_tm_rscale_fn[] = {
 	[SCALE_R_ABSOLUTE] = {qpnp_adc_absolute_rthr},
 	[SCALE_QRD_SKUH_RBATT_THERM] = {qpnp_adc_qrd_skuh_btm_scaler},
 	[SCALE_QRD_SKUT1_RBATT_THERM] = {qpnp_adc_qrd_skut1_btm_scaler},
-	[SCALE_QRD_215_RBATT_THERM] = {qpnp_adc_qrd_215_btm_scaler},
 };
 
 static int32_t qpnp_adc_tm_read_reg(struct qpnp_adc_tm_chip *chip,
@@ -1697,6 +1694,7 @@ static int qpnp_adc_tm_set_trip_temp(void *data, int low_temp, int high_temp)
 	uint16_t reg_high_thr_lsb, reg_high_thr_msb;
 	int rc = 0;
 	uint32_t btm_chan = 0, btm_chan_idx = 0;
+	int emul_temp;
 
 	if (qpnp_adc_tm_is_valid(chip))
 		return -ENODEV;
@@ -1714,6 +1712,13 @@ static int qpnp_adc_tm_set_trip_temp(void *data, int low_temp, int high_temp)
 	if ((high_temp == INT_MAX) && (low_temp == INT_MIN)) {
 		pr_err("No trips to set\n");
 		return -EINVAL;
+	}
+
+	/* Set threshold to extremely value while emul temp set */
+	emul_temp = adc_tm->emul_temperature;
+	if (emul_temp) {
+		high_temp = INT_MAX;
+		low_temp = INT_MIN;
 	}
 
 	pr_debug("requested a high - %d and low - %d\n",
@@ -1835,6 +1840,14 @@ static int qpnp_adc_tm_set_trip_temp(void *data, int low_temp, int high_temp)
 	return 0;
 }
 
+static int qpnp_adc_tm_set_emul_temp(void *data, int emul_temp)
+{
+	struct qpnp_adc_tm_sensor *adc_tm_sensor = data;
+
+	adc_tm_sensor->emul_temperature = emul_temp;
+	return 0;
+}
+
 static void notify_battery_therm(struct qpnp_adc_tm_sensor *adc_tm)
 {
 	struct qpnp_adc_thr_client_info *client_info = NULL;
@@ -1896,6 +1909,13 @@ static int qpnp_adc_read_temp(void *data, int *temp)
 	struct qpnp_adc_tm_chip *chip = adc_tm_sensor->chip;
 	struct qpnp_vadc_result result;
 	int rc = 0;
+	int emul_temp;
+
+	emul_temp = adc_tm_sensor->emul_temperature;
+	if (emul_temp) {
+		*temp = emul_temp;
+		return rc;
+	}
 
 	rc = qpnp_vadc_read(chip->vadc_dev,
 				adc_tm_sensor->vadc_channel_num, &result);
@@ -2373,7 +2393,7 @@ static int qpnp_adc_tm_hc_read_status(struct qpnp_adc_tm_chip *chip)
 				pr_err("rearm threshold failed\n");
 				goto fail;
 			}
-			chip->sensor[sensor_num].high_thr_triggered--;
+			chip->sensor[sensor_num].high_thr_triggered = false;
 		}
 		sensor_num++;
 	}
@@ -2387,7 +2407,7 @@ static int qpnp_adc_tm_hc_read_status(struct qpnp_adc_tm_chip *chip)
 				pr_err("rearm threshold failed\n");
 				goto fail;
 			}
-			chip->sensor[sensor_num].low_thr_triggered--;
+			chip->sensor[sensor_num].low_thr_triggered = false;
 		}
 		sensor_num++;
 	}
@@ -2619,8 +2639,7 @@ static irqreturn_t qpnp_adc_tm_low_thr_isr(int irq, void *data)
 
 static int qpnp_adc_tm_rc_check_sensor_trip(struct qpnp_adc_tm_chip *chip,
 			u8 status_low, u8 status_high, int i,
-			int *sensor_low_notify_num, int *sensor_high_notify_num,
-			int *cnt_low, int *cnt_high)
+			int *sensor_low_notify_num, int *sensor_high_notify_num)
 {
 	int rc = 0;
 	u8 ctl = 0, sensor_mask = 0;
@@ -2661,9 +2680,7 @@ static int qpnp_adc_tm_rc_check_sensor_trip(struct qpnp_adc_tm_chip *chip,
 				}
 			}
 			*sensor_low_notify_num |= (status_low & 0x1);
-			chip->sensor[i].low_thr_triggered++;
-			chip->sensor[i].tmp_low_thr_triggered++;
-			*cnt_low = *cnt_low + 1;
+			chip->sensor[i].low_thr_triggered = true;
 		}
 
 		if ((status_high & 0x1) && (ctl & QPNP_BTM_Mn_MEAS_EN) &&
@@ -2694,64 +2711,11 @@ static int qpnp_adc_tm_rc_check_sensor_trip(struct qpnp_adc_tm_chip *chip,
 				}
 			}
 			*sensor_high_notify_num |= (status_high & 0x1);
-			chip->sensor[i].high_thr_triggered++;
-			chip->sensor[i].tmp_high_thr_triggered++;
-			*cnt_high = *cnt_high + 1;
+			chip->sensor[i].high_thr_triggered = true;
 		}
 	}
 
 	return rc;
-}
-
-static void force_enable_int_th(struct qpnp_adc_tm_chip *chip, bool is_low, bool is_high)
-{
-	int i = 0;
-	int rc = 0;
-
-	while (i < chip->max_channels_available) {
-		if (is_low) {
-			if (chip->sensor[i].tmp_low_thr_triggered) {
-				rc = qpnp_adc_tm_activate_trip_type(
-						&chip->sensor[i],
-						ADC_TM_TRIP_HIGH_WARM,
-						THERMAL_TRIP_ACTIVATION_ENABLED);
-				if (rc < 0)
-					pr_err("re-enable high int thr error:%d\n", i);
-
-				chip->sensor[i].low_thr_triggered--;
-			}
-		}
-
-		if (is_high) {
-			if (chip->sensor[i].tmp_high_thr_triggered) {
-				rc = qpnp_adc_tm_activate_trip_type(
-						&chip->sensor[i],
-						ADC_TM_TRIP_LOW_COOL,
-						THERMAL_TRIP_ACTIVATION_ENABLED);
-				if (rc < 0)
-					pr_err("re-enable low int thr error:%d\n", i);
-
-				chip->sensor[i].high_thr_triggered--;
-			}
-		}
-
-		i++;
-	}
-
-}
-
-static void clear_tmp_low_high(struct qpnp_adc_tm_chip *chip)
-{
-	int i = 0;
-
-	while (i < chip->max_channels_available) {
-		if (chip->sensor[i].tmp_low_thr_triggered)
-			chip->sensor[i].tmp_low_thr_triggered = 0;
-		if (chip->sensor[i].tmp_high_thr_triggered)
-			chip->sensor[i].tmp_high_thr_triggered = 0;
-
-		i++;
-	}
 }
 
 static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
@@ -2760,8 +2724,6 @@ static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
 	u8 status_low = 0, status_high = 0;
 	int rc = 0, sensor_low_notify_num = 0, i = 0;
 	int sensor_high_notify_num = 0;
-	int cnt_low = 0;
-	int cnt_high = 0;
 
 	rc = qpnp_adc_tm_read_reg(chip, QPNP_ADC_TM_STATUS_LOW,
 						&status_low, 1);
@@ -2787,11 +2749,9 @@ static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
 		rc = qpnp_adc_tm_rc_check_sensor_trip(chip,
 				status_low, status_high, i,
 				&sensor_low_notify_num,
-				&sensor_high_notify_num, &cnt_low, &cnt_high);
+				&sensor_high_notify_num);
 		if (rc) {
 			pr_err("Sensor trip read failed\n");
-			force_enable_int_th(chip, true, true);
-			clear_tmp_low_high(chip);
 			return IRQ_HANDLED;
 		}
 		status_low >>= 1;
@@ -2800,25 +2760,17 @@ static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
 	}
 
 	if (sensor_low_notify_num) {
-		if (!work_pending(&chip->trigger_low_thr_work)) {
-			pm_wakeup_event(chip->dev,
-					QPNP_ADC_WAKEUP_SRC_TIMEOUT_MS);
-			queue_work(chip->low_thr_wq, &chip->trigger_low_thr_work);
-		} else
-			force_enable_int_th(chip, true, false);
+		pm_wakeup_event(chip->dev,
+				QPNP_ADC_WAKEUP_SRC_TIMEOUT_MS);
+		queue_work(chip->low_thr_wq, &chip->trigger_low_thr_work);
 	}
 
 	if (sensor_high_notify_num) {
-		if (!work_pending(&chip->trigger_high_thr_work)) {
-			pm_wakeup_event(chip->dev,
-					QPNP_ADC_WAKEUP_SRC_TIMEOUT_MS);
-			queue_work(chip->high_thr_wq,
-					&chip->trigger_high_thr_work);
-		} else
-			force_enable_int_th(chip, false, true);
+		pm_wakeup_event(chip->dev,
+				QPNP_ADC_WAKEUP_SRC_TIMEOUT_MS);
+		queue_work(chip->high_thr_wq,
+				&chip->trigger_high_thr_work);
 	}
-
-	clear_tmp_low_high(chip);
 
 	return IRQ_HANDLED;
 }
@@ -2826,6 +2778,7 @@ static irqreturn_t qpnp_adc_tm_rc_thr_isr(int irq, void *data)
 static struct thermal_zone_of_device_ops qpnp_adc_tm_thermal_ops = {
 	.get_temp = qpnp_adc_read_temp,
 	.set_trips = qpnp_adc_tm_set_trip_temp,
+	.set_emul_temp = qpnp_adc_tm_set_emul_temp,
 };
 
 int32_t qpnp_adc_tm_channel_measure(struct qpnp_adc_tm_chip *chip,
@@ -3245,6 +3198,7 @@ static int qpnp_adc_tm_probe(struct platform_device *pdev)
 						QPNP_ADC_TM_M0_LOW_THR;
 			chip->sensor[sen_idx].high_thr =
 						QPNP_ADC_TM_M0_HIGH_THR;
+			chip->sensor[sen_idx].emul_temperature = 0;
 			chip->sensor[sen_idx].tz_dev =
 				devm_thermal_zone_of_sensor_register(
 				chip->dev,
@@ -3316,7 +3270,7 @@ static int qpnp_adc_tm_probe(struct platform_device *pdev)
 	} else {
 		rc = devm_request_irq(&pdev->dev, chip->adc->adc_irq_eoc,
 				qpnp_adc_tm_rc_thr_isr,
-			IRQF_TRIGGER_RISING, "qpnp_adc_tm_interrupt", chip);
+			IRQF_TRIGGER_HIGH, "qpnp_adc_tm_interrupt", chip);
 		if (rc)
 			dev_err(&pdev->dev, "failed to request adc irq\n");
 		else

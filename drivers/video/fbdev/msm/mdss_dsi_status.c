@@ -146,18 +146,15 @@ static int fb_event_callback(struct notifier_block *self,
 		return NOTIFY_DONE;
 
 	mfd = evdata->info->par;
-	if (mfd->panel_info->type == SPI_PANEL) {
-		pinfo = mfd->panel_info;
-	} else {
-		ctrl_pdata = container_of(dev_get_platdata(&mfd->pdev->dev),
+	ctrl_pdata = container_of(dev_get_platdata(&mfd->pdev->dev),
 				struct mdss_dsi_ctrl_pdata, panel_data);
-		if (!ctrl_pdata) {
-			pr_err("%s: DSI ctrl not available\n", __func__);
-			return NOTIFY_BAD;
-		}
-
-		pinfo = &ctrl_pdata->panel_data.panel_info;
+	if (!ctrl_pdata) {
+		pr_err("%s: DSI ctrl not available\n", __func__);
+		return NOTIFY_BAD;
 	}
+
+	pinfo = &ctrl_pdata->panel_data.panel_info;
+
 	if ((!(pinfo->esd_check_enabled) &&
 			dsi_status_disable) ||
 			(dsi_status_disable == DSI_STATUS_CHECK_DISABLE)) {

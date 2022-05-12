@@ -113,13 +113,6 @@
 #define F12_WAKEUP_GESTURE_MODE 0x02
 #define F12_UDG_DETECT 0x0f
 
-#define PWR_VTG_MIN_UV		2700000
-#define PWR_VTG_MAX_UV		3600000
-#define PWR_ACTIVE_LOAD_UA	2000
-#define I2C_VTG_MIN_UV		1710000
-#define I2C_VTG_MAX_UV		2000000
-#define I2C_ACTIVE_LOAD_UA	7000
-
 static int synaptics_rmi4_check_status(struct synaptics_rmi4_data *rmi4_data,
 		bool *was_in_bl_mode);
 static int synaptics_rmi4_free_fingers(struct synaptics_rmi4_data *rmi4_data);
@@ -1471,7 +1464,7 @@ static int synaptics_rmi4_f12_abs_report(struct synaptics_rmi4_data *rmi4_data,
 		input_mt_sync(rmi4_data->input_dev);
 #endif
 
-		if (rmi4_data->stylus_enable && rmi4_data->stylus_dev) {
+		if (rmi4_data->stylus_enable) {
 			stylus_presence = 0;
 			input_report_key(rmi4_data->stylus_dev,
 					BTN_TOUCH, 0);
@@ -3414,66 +3407,6 @@ err_gpio_irq:
 	return retval;
 }
 
-static int reg_set_optimum_mode_check(struct regulator *reg, int load_uA)
-{
-	return (regulator_count_voltages(reg) > 0) ?
-		regulator_set_load(reg, load_uA) : 0;
-}
-
-static int synaptics_rmi4_configure_reg(struct synaptics_rmi4_data *rmi4_data,
-				bool on)
-{
-	int retval;
-
-	if (on == false)
-		goto hw_shutdown;
-
-	if (rmi4_data->pwr_reg) {
-		if (regulator_count_voltages(rmi4_data->pwr_reg) > 0) {
-			retval = regulator_set_voltage(rmi4_data->pwr_reg,
-				PWR_VTG_MIN_UV, PWR_VTG_MAX_UV);
-			if (retval) {
-				dev_err(rmi4_data->pdev->dev.parent,
-					"regulator set_vtg failed retval =%d\n",
-					retval);
-				goto err_set_vtg_pwr;
-			}
-		}
-	}
-
-	if (rmi4_data->bus_reg) {
-		if (regulator_count_voltages(rmi4_data->bus_reg) > 0) {
-			retval = regulator_set_voltage(rmi4_data->bus_reg,
-				I2C_VTG_MIN_UV, I2C_VTG_MAX_UV);
-			if (retval) {
-				dev_err(rmi4_data->pdev->dev.parent,
-					"regulator set_vtg failed retval =%d\n",
-					retval);
-				goto err_set_vtg_bus;
-			}
-		}
-	}
-
-	return 0;
-
-err_set_vtg_bus:
-	if (rmi4_data->pwr_reg &&
-		regulator_count_voltages(rmi4_data->pwr_reg) > 0)
-		regulator_set_voltage(rmi4_data->pwr_reg, 0, PWR_VTG_MAX_UV);
-err_set_vtg_pwr:
-	return retval;
-
-hw_shutdown:
-	if (rmi4_data->pwr_reg &&
-		regulator_count_voltages(rmi4_data->pwr_reg) > 0)
-		regulator_set_voltage(rmi4_data->pwr_reg, 0, PWR_VTG_MAX_UV);
-	if (rmi4_data->bus_reg &&
-		regulator_count_voltages(rmi4_data->bus_reg) > 0)
-		regulator_set_voltage(rmi4_data->bus_reg, 0, I2C_VTG_MAX_UV);
-
-	return 0;
-}
-
 static int synaptics_rmi4_get_reg(struct synaptics_rmi4_data *rmi4_data,
 		bool get)
 {
@@ -3539,66 +3472,37 @@ static int synaptics_rmi4_enable_reg(struct synaptics_rmi4_data *rmi4_data,
 	}
 
 	if (rmi4_data->bus_reg) {
-		retval = reg_set_optimum_mode_check(rmi4_data->bus_reg,
-					I2C_ACTIVE_LOAD_UA);
-		if (retval < 0) {
-			dev_err(rmi4_data->pdev->dev.parent,
-					"%s: Regulator set_opt failed rc=%d\n",
-					__func__, retval);
-			return retval;
-		}
-
 		retval = regulator_enable(rmi4_data->bus_reg);
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to enable bus pullup regulator\n",
 					__func__);
-			goto err_bus_reg_en;
+			goto exit;
 		}
 	}
 
 	if (rmi4_data->pwr_reg) {
-		retval = reg_set_optimum_mode_check(rmi4_data->pwr_reg,
-					PWR_ACTIVE_LOAD_UA);
-		if (retval < 0) {
-			dev_err(rmi4_data->pdev->dev.parent,
-					"%s: Regulator set_opt failed rc=%d\n",
-					__func__, retval);
-			goto disable_bus_reg;
-		}
-
 		retval = regulator_enable(rmi4_data->pwr_reg);
 		if (retval < 0) {
 			dev_err(rmi4_data->pdev->dev.parent,
 					"%s: Failed to enable power regulator\n",
 					__func__);
-			goto err_pwr_reg_en;
+			goto disable_bus_reg;
 		}
 		msleep(bdata->power_delay_ms);
 	}
 
 	return 0;
 
-err_pwr_reg_en:
-	reg_set_optimum_mode_check(rmi4_data->pwr_reg, 0);
-	goto disable_bus_reg;
-err_bus_reg_en:
-	reg_set_optimum_mode_check(rmi4_data->bus_reg, 0);
-
-	return retval;
-
 disable_pwr_reg:
-	if (rmi4_data->pwr_reg) {
-		reg_set_optimum_mode_check(rmi4_data->pwr_reg, 0);
+	if (rmi4_data->pwr_reg)
 		regulator_disable(rmi4_data->pwr_reg);
-	}
 
 disable_bus_reg:
-	if (rmi4_data->bus_reg) {
-		reg_set_optimum_mode_check(rmi4_data->bus_reg, 0);
+	if (rmi4_data->bus_reg)
 		regulator_disable(rmi4_data->bus_reg);
-	}
 
+exit:
 	return retval;
 }
 
@@ -3624,7 +3528,7 @@ static int synaptics_rmi4_free_fingers(struct synaptics_rmi4_data *rmi4_data)
 #endif
 	input_sync(rmi4_data->input_dev);
 
-	if (rmi4_data->stylus_enable && rmi4_data->stylus_dev) {
+	if (rmi4_data->stylus_enable) {
 		input_report_key(rmi4_data->stylus_dev,
 				BTN_TOUCH, 0);
 		input_report_key(rmi4_data->stylus_dev,
@@ -4072,14 +3976,6 @@ static int synaptics_rmi4_probe(struct platform_device *pdev)
 		goto err_get_reg;
 	}
 
-	retval = synaptics_rmi4_configure_reg(rmi4_data, true);
-	if (retval < 0) {
-		dev_err(&pdev->dev,
-				"%s: Failed to configure regulators\n",
-				__func__);
-		goto err_configure_reg;
-	}
-
 	retval = synaptics_rmi4_enable_reg(rmi4_data, true);
 	if (retval < 0) {
 		dev_err(&pdev->dev,
@@ -4306,8 +4202,6 @@ err_set_gpio:
 err_enable_reg:
 	synaptics_rmi4_get_reg(rmi4_data, false);
 
-err_configure_reg:
-	synaptics_rmi4_configure_reg(rmi4_data, false);
 err_get_reg:
 	kfree(rmi4_data);
 
@@ -4390,7 +4284,6 @@ static int synaptics_rmi4_remove(struct platform_device *pdev)
 	}
 
 	synaptics_rmi4_enable_reg(rmi4_data, false);
-	synaptics_rmi4_configure_reg(rmi4_data, false);
 	synaptics_rmi4_get_reg(rmi4_data, false);
 
 	kfree(rmi4_data);
@@ -4664,7 +4557,6 @@ static int synaptics_rmi4_suspend(struct device *dev)
 	struct synaptics_rmi4_exp_fhandler *exp_fhandler;
 	struct synaptics_rmi4_data *rmi4_data = dev_get_drvdata(dev);
 	int retval;
-	int lpm_uA;
 
 	if (rmi4_data->stay_awake)
 		return 0;
@@ -4673,17 +4565,6 @@ static int synaptics_rmi4_suspend(struct device *dev)
 
 	if (rmi4_data->enable_wakeup_gesture) {
 		if (!rmi4_data->suspend) {
-			/* Set lpm current for bus regulator */
-			lpm_uA = rmi4_data->hw_if->board_data->bus_lpm_cur_uA;
-			if (lpm_uA) {
-				retval = reg_set_optimum_mode_check(
-						rmi4_data->bus_reg, lpm_uA);
-				if (retval < 0)
-					dev_err(dev,
-					"Bus Regulator set_opt failed rc=%d\n",
-					retval);
-			}
-
 			synaptics_rmi4_wakeup_gesture(rmi4_data, true);
 			enable_irq_wake(rmi4_data->irq);
 		}
@@ -4713,8 +4594,7 @@ exit:
 	}
 	mutex_unlock(&exp_data.mutex);
 
-	if (!rmi4_data->suspend && !rmi4_data->enable_wakeup_gesture &&
-			!rmi4_data->hw_if->board_data->dont_disable_regs)
+	if (!rmi4_data->suspend && !rmi4_data->enable_wakeup_gesture)
 		synaptics_rmi4_enable_reg(rmi4_data, false);
 
 	rmi4_data->suspend = true;
@@ -4743,18 +4623,6 @@ static int synaptics_rmi4_resume(struct device *dev)
 
 	if (rmi4_data->enable_wakeup_gesture) {
 		if (rmi4_data->suspend) {
-			/* Set active current for the bus regulator */
-			if (rmi4_data->hw_if->board_data->bus_lpm_cur_uA) {
-				retval = reg_set_optimum_mode_check(
-						rmi4_data->bus_reg,
-						I2C_ACTIVE_LOAD_UA);
-				if (retval < 0)
-					dev_err(dev,
-					"Pwr regulator set_opt failed rc=%d\n",
-					retval);
-			}
-
-
 			synaptics_rmi4_wakeup_gesture(rmi4_data, false);
 			disable_irq_wake(rmi4_data->irq);
 		}
@@ -4763,8 +4631,7 @@ static int synaptics_rmi4_resume(struct device *dev)
 
 	rmi4_data->current_page = MASK_8BIT;
 
-	if (rmi4_data->suspend &&
-			!rmi4_data->hw_if->board_data->dont_disable_regs)
+	if (rmi4_data->suspend)
 		synaptics_rmi4_enable_reg(rmi4_data, true);
 
 	synaptics_rmi4_sleep_enable(rmi4_data, false);

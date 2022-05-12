@@ -551,24 +551,28 @@ static int mmc_devfreq_set_target(struct device *dev,
 	pr_debug("%s: target freq = %lu (%s)\n", mmc_hostname(host),
 		*freq, current->comm);
 
+	if ((clk_scaling->curr_freq == *freq) ||
+		clk_scaling->skip_clk_scale_freq_update)
+		goto out;
+
+	/* No need to scale the clocks if they are gated */
+	if (!host->ios.clock)
+		goto out;
+
 	spin_lock_bh(&clk_scaling->lock);
-	if (clk_scaling->target_freq == *freq ||
-		clk_scaling->skip_clk_scale_freq_update) {
+	if (clk_scaling->clk_scaling_in_progress) {
+		pr_debug("%s: clocks scaling is already in-progress by mmc thread\n",
+			mmc_hostname(host));
 		spin_unlock_bh(&clk_scaling->lock);
 		goto out;
 	}
-
 	clk_scaling->need_freq_change = true;
 	clk_scaling->target_freq = *freq;
 	clk_scaling->state = *freq < clk_scaling->curr_freq ?
 		MMC_LOAD_LOW : MMC_LOAD_HIGH;
 	spin_unlock_bh(&clk_scaling->lock);
 
-	if (!clk_scaling->is_suspended && host->ios.clock)
-		abort = __mmc_claim_host(host, &clk_scaling->devfreq_abort);
-	else
-		goto out;
-
+	abort = __mmc_claim_host(host, &clk_scaling->devfreq_abort);
 	if (abort)
 		goto out;
 
@@ -612,7 +616,6 @@ void mmc_deferred_scaling(struct mmc_host *host, unsigned long timeout)
 {
 	unsigned long target_freq;
 	int err;
-	struct mmc_devfeq_clk_scaling clk_scaling;
 
 	if (!host->clk_scaling.enable)
 		return;
@@ -622,7 +625,8 @@ void mmc_deferred_scaling(struct mmc_host *host, unsigned long timeout)
 
 	spin_lock_bh(&host->clk_scaling.lock);
 
-	if (!host->clk_scaling.need_freq_change) {
+	if (host->clk_scaling.clk_scaling_in_progress ||
+		!(host->clk_scaling.need_freq_change)) {
 		spin_unlock_bh(&host->clk_scaling.lock);
 		return;
 	}
@@ -630,12 +634,7 @@ void mmc_deferred_scaling(struct mmc_host *host, unsigned long timeout)
 
 	atomic_inc(&host->clk_scaling.devfreq_abort);
 	target_freq = host->clk_scaling.target_freq;
-	/*
-	 * Store the clock scaling state while the lock is acquired so that
-	 * if devfreq context modifies clk_scaling, it will get reflected only
-	 * in the next deferred scaling check.
-	 */
-	clk_scaling = host->clk_scaling;
+	host->clk_scaling.clk_scaling_in_progress = true;
 	host->clk_scaling.need_freq_change = false;
 	spin_unlock_bh(&host->clk_scaling.lock);
 	pr_debug("%s: doing deferred frequency change (%lu) (%s)\n",
@@ -643,7 +642,7 @@ void mmc_deferred_scaling(struct mmc_host *host, unsigned long timeout)
 				target_freq, current->comm);
 
 	err = mmc_clk_update_freq(host, target_freq,
-		clk_scaling.state, timeout);
+		host->clk_scaling.state, timeout);
 	if (err && err != -EAGAIN) {
 		pr_err("%s: failed on deferred scale clocks (%d)\n",
 			mmc_hostname(host), err);
@@ -653,6 +652,7 @@ void mmc_deferred_scaling(struct mmc_host *host, unsigned long timeout)
 			mmc_hostname(host),
 			target_freq, current->comm);
 	}
+	host->clk_scaling.clk_scaling_in_progress = false;
 	atomic_dec(&host->clk_scaling.devfreq_abort);
 }
 EXPORT_SYMBOL(mmc_deferred_scaling);
@@ -782,6 +782,7 @@ int mmc_init_clk_scaling(struct mmc_host *host)
 	spin_lock_init(&host->clk_scaling.lock);
 	atomic_set(&host->clk_scaling.devfreq_abort, 0);
 	host->clk_scaling.curr_freq = host->ios.clock;
+	host->clk_scaling.clk_scaling_in_progress = false;
 	host->clk_scaling.need_freq_change = false;
 	host->clk_scaling.is_busy_started = false;
 
@@ -852,8 +853,7 @@ int mmc_suspend_clk_scaling(struct mmc_host *host)
 		return -EINVAL;
 	}
 
-	if (!mmc_can_scale_clk(host) || !host->clk_scaling.enable ||
-			host->clk_scaling.is_suspended)
+	if (!mmc_can_scale_clk(host) || !host->clk_scaling.enable)
 		return 0;
 
 	if (!host->clk_scaling.devfreq) {
@@ -870,7 +870,7 @@ int mmc_suspend_clk_scaling(struct mmc_host *host)
 			mmc_hostname(host), __func__);
 		return err;
 	}
-	host->clk_scaling.is_suspended = true;
+	host->clk_scaling.enable = false;
 
 	host->clk_scaling.total_busy_time_us = 0;
 
@@ -924,12 +924,15 @@ int mmc_resume_clk_scaling(struct mmc_host *host)
 	if (host->ios.clock < host->clk_scaling.freq_table[max_clk_idx])
 		host->clk_scaling.curr_freq = devfreq_min_clk;
 
+	host->clk_scaling.clk_scaling_in_progress = false;
+	host->clk_scaling.need_freq_change = false;
+
 	err = devfreq_resume_device(host->clk_scaling.devfreq);
 	if (err) {
 		pr_err("%s: %s: failed to resume devfreq (%d)\n",
 			mmc_hostname(host), __func__, err);
 	} else {
-		host->clk_scaling.is_suspended = false;
+		host->clk_scaling.enable = true;
 		pr_debug("%s: devfreq resumed\n", mmc_hostname(host));
 	}
 
@@ -1095,20 +1098,6 @@ void mmc_request_done(struct mmc_host *host, struct mmc_request *mrq)
 			pr_debug("%s:     %d bytes transferred: %d\n",
 				mmc_hostname(host),
 				mrq->data->bytes_xfered, mrq->data->error);
-#ifdef CONFIG_BLOCK
-			if (mrq->lat_hist_enabled) {
-				ktime_t completion;
-				u_int64_t delta_us;
-
-				completion = ktime_get();
-				delta_us = ktime_us_delta(completion,
-							  mrq->io_start);
-				blk_update_latency_hist(
-					(mrq->data->flags & MMC_DATA_READ) ?
-					&host->io_lat_read :
-					&host->io_lat_write, delta_us);
-			}
-#endif
 		}
 
 		if (mrq->stop) {
@@ -1318,6 +1307,14 @@ static int mmc_start_cmdq_request(struct mmc_host *host,
 		mrq->cmd->error = 0;
 		mrq->cmd->mrq = mrq;
 	}
+
+#ifdef CONFIG_BLOCK
+	if (host->latency_hist_enabled) {
+		mrq->io_start = ktime_get();
+		mrq->lat_hist_enabled = 1;
+	} else
+		mrq->lat_hist_enabled = 0;
+#endif
 
 	mmc_host_clk_hold(host);
 	mmc_cmdq_check_retune(host);
@@ -1914,6 +1911,14 @@ int mmc_cmdq_prepare_flush(struct mmc_command *cmd)
 }
 EXPORT_SYMBOL(mmc_cmdq_prepare_flush);
 
+int mmc_cmdq_prepare_cache_barrier(struct mmc_command *cmd)
+{
+	return   __mmc_switch_cmdq_mode(cmd, EXT_CSD_CMD_SET_NORMAL,
+				     EXT_CSD_FLUSH_CACHE, 2,
+				     0, true, true);
+}
+EXPORT_SYMBOL(mmc_cmdq_prepare_cache_barrier);
+
 /**
  *	mmc_start_req - start a non-blocking request
  *	@host: MMC host to start command
@@ -1973,13 +1978,6 @@ struct mmc_async_req *mmc_start_req(struct mmc_host *host,
 	}
 
 	if (!err && areq) {
-#ifdef CONFIG_BLOCK
-		if (host->latency_hist_enabled) {
-			areq->mrq->io_start = ktime_get();
-			areq->mrq->lat_hist_enabled = 1;
-		} else
-			areq->mrq->lat_hist_enabled = 0;
-#endif
 		start_err = __mmc_start_data_req(host, areq->mrq);
 	}
 
@@ -2014,9 +2012,10 @@ EXPORT_SYMBOL(mmc_start_req);
  */
 void mmc_wait_for_req(struct mmc_host *host, struct mmc_request *mrq)
 {
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 	if (mmc_bus_needs_resume(host))
 		mmc_resume_bus(host);
-
+#endif
 	__mmc_start_req(host, mrq);
 
 	if (!mrq->cap_cmd_during_tfr)
@@ -2459,9 +2458,10 @@ void mmc_get_card(struct mmc_card *card)
 {
 	pm_runtime_get_sync(&card->dev);
 	mmc_claim_host(card->host);
-
+#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 	if (mmc_bus_needs_resume(card->host))
 		mmc_resume_bus(card->host);
+#endif
 }
 EXPORT_SYMBOL(mmc_get_card);
 
@@ -2936,7 +2936,7 @@ int mmc_regulator_set_ocr(struct mmc_host *mmc,
 			unsigned short vdd_bit)
 {
 	int			result = 0;
-	int			min_uV, max_uV;
+	int			min_uV = 0, max_uV = 0;
 
 	if (vdd_bit) {
 		mmc_ocrbitnum_to_vdd(vdd_bit, &min_uV, &max_uV);
@@ -3420,7 +3420,6 @@ int mmc_resume_bus(struct mmc_host *host)
 {
 	unsigned long flags;
 	int err = 0;
-	int card_present = true;
 
 	if (!mmc_bus_needs_resume(host))
 		return -EINVAL;
@@ -3431,16 +3430,7 @@ int mmc_resume_bus(struct mmc_host *host)
 	spin_unlock_irqrestore(&host->lock, flags);
 
 	mmc_bus_get(host);
-	if (host->ops->get_cd) {
-		card_present = host->ops->get_cd(host);
-		if (!card_present) {
-			pr_err("%s: Card removed - card_present:%d\n",
-			       mmc_hostname(host), card_present);
-			mmc_card_set_removed(host->card);
-		}
-	}
-
-	if (host->bus_ops && !host->bus_dead && host->card && card_present) {
+	if (host->bus_ops && !host->bus_dead && host->card) {
 		mmc_power_up(host, host->card->ocr);
 		BUG_ON(!host->bus_ops->resume);
 		err = host->bus_ops->resume(host);
@@ -4768,7 +4758,7 @@ static int mmc_pm_notify(struct notifier_block *notify_block,
 	struct mmc_host *host = container_of(
 		notify_block, struct mmc_host, pm_notify);
 	unsigned long flags;
-	int err = 0, present = 0;
+	int err = 0;
 
 	switch (mode) {
 	case PM_RESTORE_PREPARE:
@@ -4815,12 +4805,8 @@ static int mmc_pm_notify(struct notifier_block *notify_block,
 
 		spin_lock_irqsave(&host->lock, flags);
 		host->rescan_disable = 0;
-		if (host->ops->get_cd)
-			present = host->ops->get_cd(host);
-
 		if (mmc_bus_manual_resume(host) &&
-				!host->ignore_bus_resume_flags &&
-				present) {
+				!host->ignore_bus_resume_flags) {
 			spin_unlock_irqrestore(&host->lock, flags);
 			break;
 		}

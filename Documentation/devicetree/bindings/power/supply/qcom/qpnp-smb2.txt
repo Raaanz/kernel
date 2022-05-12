@@ -92,6 +92,15 @@ Charger specific properties:
 		maximum charge current in mA for each thermal
 		level.
 
+- google,wlc-thermal-mitigation
+  Usage:      optional
+  Value type: Array of <u32>
+  Definition: Array of DC input current limit values for
+		different system thermal mitigation levels.
+		This should be a flat array that denotes the
+		maximum DC input current in micro-amps for each
+                thermal level.
+
 - io-channels
   Usage:      optional
   Value type: List of <phandle u32>
@@ -168,11 +177,6 @@ Charger specific properties:
   Definition: Specifies the deglitch interval for OTG detection.
 		If the value is not present, 50 msec is used as default.
 
-- qcom,pd-not-supported
-  Usage:      optional
-  Value type: bool
-  Definition: Option to indicate if the platform supports USB PD (power delivery).
-
 - qcom,step-charging-enable
   Usage:      optional
   Value type: bool
@@ -197,24 +201,6 @@ Charger specific properties:
 		when step charging and sw-jeita configurations are desired
 		to be get from these properties defined in battery profile:
 		qcom,step-chg-ranges, qcom,jeita-fcc-ranges, qcom,jeita-fv-ranges.
-
-- qcom,disable-stat-sw-override
-  Usage:      optional
-  Value type: bool
-  Definition: Boolean flag which when present disables STAT pin default software
-		override configuration.
-
-- qcom,fcc-stepping-enable
-  Usage:      optional
-  Value type: bool
-  Definition: Boolean flag which when present enables stepwise change in FCC.
-		The default stepping rate is 100mA/sec.
-
-- qcom,ufp-only-mode
-  Usage:      optional
-  Value type: bool
-  Definition: Boolean flag which when present configure charger in SINK only
-		mode.
 
 =============================================
 Second Level Nodes - SMB2 Charger Peripherals

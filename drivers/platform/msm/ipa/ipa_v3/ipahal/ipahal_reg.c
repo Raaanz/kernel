@@ -134,10 +134,11 @@ static const char *ipareg_name_to_str[IPA_REG_MAX] = {
 	__stringify(IPA_MBIM_DEAGGR_FEC_ATTR_EE_n),
 	__stringify(IPA_GEN_DEAGGR_FEC_ATTR_EE_n),
 	__stringify(IPA_GSI_CONF),
-	__stringify(IPA_ENDP_GSI_CFG1_n),
-	__stringify(IPA_ENDP_GSI_CFG2_n),
-	__stringify(IPA_ENDP_GSI_CFG_AOS_n),
-	__stringify(IPA_ENDP_GSI_CFG_TLV_n),
+	__stringify(IPA_ENDP_GSI_CFG1_OFST_n),
+	__stringify(IPA_ENDP_GSI_CFG2_OFST_n),
+	__stringify(IPA_ENDP_GSI_CFG_AOS_OFST_n),
+	__stringify(IPA_ENDP_GSI_CFG_TLV_OFST_n),
+	__stringify(IPA_SPARE_REG_1_OFST),
 };
 
 static void ipareg_construct_dummy(enum ipahal_reg_name reg,
@@ -1979,18 +1980,21 @@ static struct ipahal_reg_obj ipahal_reg_objs[IPA_HW_MAX][IPA_REG_MAX] = {
 	[IPA_HW_v3_5][IPA_GSI_CONF] = {
 		ipareg_construct_dummy, ipareg_parse_dummy,
 		0x00002790, 0x0, 0, 0, 0 },
-	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG1_n] = {
+	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG1_OFST_n] = {
 		ipareg_construct_dummy, ipareg_parse_dummy,
 		0x00002794, 0x4, 0, 0, 0 },
-	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG2_n] = {
+	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG2_OFST_n] = {
 		ipareg_construct_dummy, ipareg_parse_dummy,
 		0x00002A2C, 0x4, 0, 0, 0 },
-	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG_AOS_n] = {
+	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG_AOS_OFST_n] = {
 		ipareg_construct_dummy, ipareg_parse_dummy,
 		0x000029A8, 0x4, 0, 0, 0 },
-	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG_TLV_n] = {
+	[IPA_HW_v3_5][IPA_ENDP_GSI_CFG_TLV_OFST_n] = {
 		ipareg_construct_dummy, ipareg_parse_dummy,
 		0x00002924, 0x4, 0, 0, 0 },
+	[IPA_HW_v3_5][IPA_SPARE_REG_1_OFST] = {
+		ipareg_construct_dummy, ipareg_parse_dummy,
+		0x00002780, 0x0, 0, 0, 0 },
 
 	/* IPAv4.0 */
 	[IPA_HW_v4_0][IPA_IRQ_SUSPEND_INFO_EE_n] = {
@@ -2237,7 +2241,7 @@ static struct ipahal_reg_obj ipahal_reg_objs[IPA_HW_MAX][IPA_REG_MAX] = {
 		0x00000CC0, 0x70, 10, 23, 1},
 };
 
-void ipahal_print_all_regs(bool print_to_dmesg)
+int ipahal_print_all_regs(void)
 {
 	int i, j;
 
@@ -2247,7 +2251,7 @@ void ipahal_print_all_regs(bool print_to_dmesg)
 	if ((ipahal_ctx->hw_type < IPA_HW_v4_0) ||
 		(ipahal_ctx->hw_type >= IPA_HW_MAX)) {
 		IPAHAL_ERR("invalid IPA HW type (%d)\n", ipahal_ctx->hw_type);
-		return;
+		return -EINVAL;
 	}
 
 	for (i = 0; i < IPA_REG_MAX ; i++) {
@@ -2256,28 +2260,15 @@ void ipahal_print_all_regs(bool print_to_dmesg)
 
 		j = ipahal_reg_objs[ipahal_ctx->hw_type][i].n_start;
 
-		if (j == ipahal_reg_objs[ipahal_ctx->hw_type][i].n_end) {
-			if (print_to_dmesg)
-				IPAHAL_DBG_REG("%s=0x%x\n",
-					ipahal_reg_name_str(i),
-					ipahal_read_reg_n(i, j));
-			else
-				IPAHAL_DBG_REG_IPC_ONLY("%s=0x%x\n",
-					ipahal_reg_name_str(i),
-					ipahal_read_reg_n(i, j));
-		}
+		if (j == ipahal_reg_objs[ipahal_ctx->hw_type][i].n_end)
+			IPAHAL_DBG_REG("%s=0x%x\n", ipahal_reg_name_str(i),
+				ipahal_read_reg_n(i, j));
 
-		for (; j < ipahal_reg_objs[ipahal_ctx->hw_type][i].n_end; j++) {
-			if (print_to_dmesg)
-				IPAHAL_DBG_REG("%s_%u=0x%x\n",
-					ipahal_reg_name_str(i),
-					j, ipahal_read_reg_n(i, j));
-			else
-				IPAHAL_DBG_REG_IPC_ONLY("%s_%u=0x%x\n",
-					ipahal_reg_name_str(i),
-					j, ipahal_read_reg_n(i, j));
-		}
+		for (; j < ipahal_reg_objs[ipahal_ctx->hw_type][i].n_end; j++)
+			IPAHAL_DBG_REG("%s_%u=0x%x\n", ipahal_reg_name_str(i),
+				j, ipahal_read_reg_n(i, j));
 	}
+	return 0;
 }
 
 /*

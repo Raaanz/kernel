@@ -18,6 +18,24 @@ config QPNP_FG_GEN3
 	  the fuel gauge. The state of charge is reported through a BMS power
 	  supply property and also sends uevents when the capacity is updated.
 
+config QPNP_FG_GEN3_DEBUG_BATT
+	bool "QPNP GEN3 FG debug battery"
+	default n
+	help
+	  Say Y here to enable QCOM FG debug battery detection.
+	  Disabling by default to avoid ID probe on every capacity update.
+
+config QPNP_FG_GEN3_LEGACY_CYCLE_COUNT
+	tristate "QPNP GEN3 fuel gauge cycle count bins"
+	depends on QPNP_FG_GEN3
+        default y
+	help
+	  Say Y here to enable the GEN3 FG initial QCOM cycle count implementation.
+          When not selected then POWER_SUPPLY_PROP_CYCLE_COUNT exposes the linux
+          power supply battery cycle count which is not based on cycle bins.
+	  When selected only 'bms' will expose POWER_SUPPLY_PROP_CYCLE_COUNT
+          reporting the bucket based value.
+
 config SMB135X_CHARGER
 	tristate "SMB135X Battery Charger"
 	depends on I2C
@@ -50,17 +68,6 @@ config SMB1355_SLAVE_CHARGER
 	  The driver reports the charger status via the power supply framework.
 	  A charger status change triggers an IRQ via the device STAT pin.
 
-config IDT_P9220
-	tristate "idtp9220 wireless Charger"
-	depends on I2C
-	help
-	  Say Y to include support for idtp9220 wireless Charger.
-	  idtp9220 is a wireless battery charger.
-	  The driver supports charger enable/disable.
-	  The driver reports the charger status via the power supply framework.
-	  The driver controls idtp9220 via I2C and
-	  supports device-tree interface.
-
 config SMB1351_USB_CHARGER
 	tristate "smb1351 usb charger (with VBUS detection)"
 	depends on I2C
@@ -74,6 +81,7 @@ config SMB1351_USB_CHARGER
 config QPNP_SMB2
 	tristate "SMB2 Battery Charger"
 	depends on MFD_SPMI_PMIC
+	depends on LOGBUFFER
 	help
 	  Say Y to enables support for the SMB2 charging peripheral.
 	  The QPNP SMB2 charger driver supports the charger peripheral
@@ -125,6 +133,13 @@ config QPNP_QNOVO
 	  accepts pulse parameters via sysfs entries and programs the hardware
 	  module. It also allows userspace code to read diagnostics of voltage
 	  and current measured during certain phases of the pulses.
+
+config CHARGER_P9221
+	tristate "IDT P9221 wireless power receiver driver"
+	depends on I2C
+	help
+	  This driver provides support for the IDT P9221 wireless
+	  power receiver.
 
 config QPNP_VM_BMS
 	tristate "QPNP Voltage-Mode Battery Monitoring System driver"

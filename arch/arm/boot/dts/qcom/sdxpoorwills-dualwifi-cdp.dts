@@ -28,7 +28,3 @@
 &cnss_sdio {
 	status = "okay";
 };
-
-&blsp1_uart2b_hs {
-	status = "okay";
-};

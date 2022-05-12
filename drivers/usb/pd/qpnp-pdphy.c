@@ -50,7 +50,7 @@
 #define TX_SIZE_MASK			0xF
 
 #define USB_PDPHY_TX_CONTROL		0x44
-#define TX_CONTROL_RETRY_COUNT(n)	(((n) & 0x3) << 5)
+#define TX_CONTROL_RETRY_COUNT		(BIT(6) | BIT(5))
 #define TX_CONTROL_FRAME_TYPE		(BIT(4) | BIT(3) | BIT(2))
 #define TX_CONTROL_FRAME_TYPE_CABLE_RESET (0x1 << 2)
 #define TX_CONTROL_SEND_SIGNAL		BIT(1)
@@ -80,9 +80,6 @@
 #define VDD_PDPHY_VOL_MAX		3088000 /* uV */
 #define VDD_PDPHY_HPM_LOAD		3000 /* uA */
 
-/* Message Spec Rev field */
-#define PD_MSG_HDR_REV(hdr)		(((hdr) >> 6) & 3)
-
 /* timers */
 #define RECEIVER_RESPONSE_TIME		15	/* tReceiverResponse */
 #define HARD_RESET_COMPLETE_TIME	5	/* tHardResetComplete */
@@ -107,6 +104,8 @@ struct usb_pdphy {
 	void (*msg_rx_cb)(struct usbpd *pd, enum pd_sop_type sop,
 			  u8 *buf, size_t len);
 	void (*shutdown_cb)(struct usbpd *pd);
+	void (*suspend_cb)(struct usbpd *pd);
+	void (*resume_cb)(struct usbpd *pd);
 
 	/* write waitq */
 	wait_queue_head_t tx_waitq;
@@ -341,6 +340,17 @@ int pd_phy_update_roles(enum data_role dr, enum power_role pr)
 }
 EXPORT_SYMBOL(pd_phy_update_roles);
 
+int pd_phy_assign_pm_callbacks(struct pd_phy_params *params)
+{
+	struct usb_pdphy *pdphy = __pdphy;
+
+	pdphy->suspend_cb = params->suspend_cb;
+	pdphy->resume_cb =  params->resume_cb;
+
+	return 0;
+}
+EXPORT_SYMBOL(pd_phy_assign_pm_callbacks);
+
 int pd_phy_open(struct pd_phy_params *params)
 {
 	int ret;
@@ -440,12 +450,12 @@ int pd_phy_signal(enum pd_sig_type sig)
 	if (ret)
 		return ret;
 
-	ret = wait_event_interruptible_hrtimeout(pdphy->tx_waitq,
+	ret = wait_event_interruptible_timeout(pdphy->tx_waitq,
 		pdphy->tx_status != -EINPROGRESS,
-		ms_to_ktime(HARD_RESET_COMPLETE_TIME));
-	if (ret) {
+		msecs_to_jiffies(HARD_RESET_COMPLETE_TIME));
+	if (ret <= 0) {
 		dev_err(pdphy->dev, "%s: failed ret %d", __func__, ret);
-		return ret;
+		return ret ? ret : -ETIMEDOUT;
 	}
 
 	ret = pdphy_reg_write(pdphy, USB_PDPHY_TX_CONTROL, 0);
@@ -523,24 +533,18 @@ int pd_phy_write(u16 hdr, const u8 *data, size_t data_len, enum pd_sop_type sop)
 
 	usleep_range(2, 3);
 
-	val = (sop << 2) | TX_CONTROL_SEND_MSG;
-
-	/* nRetryCount == 2 for PD 3.0, 3 for PD 2.0 */
-	if (PD_MSG_HDR_REV(hdr) == USBPD_REV_30)
-		val |= TX_CONTROL_RETRY_COUNT(2);
-	else
-		val |= TX_CONTROL_RETRY_COUNT(3);
+	val = TX_CONTROL_RETRY_COUNT | (sop << 2) | TX_CONTROL_SEND_MSG;
 
 	ret = pdphy_reg_write(pdphy, USB_PDPHY_TX_CONTROL, val);
 	if (ret)
 		return ret;
 
-	ret = wait_event_interruptible_hrtimeout(pdphy->tx_waitq,
+	ret = wait_event_interruptible_timeout(pdphy->tx_waitq,
 		pdphy->tx_status != -EINPROGRESS,
-		ms_to_ktime(RECEIVER_RESPONSE_TIME));
-	if (ret) {
+		msecs_to_jiffies(RECEIVER_RESPONSE_TIME));
+	if (ret <= 0) {
 		dev_err(pdphy->dev, "%s: failed ret %d", __func__, ret);
-		return ret;
+		return ret ? ret : -ETIMEDOUT;
 	}
 
 	if (hdr && !pdphy->tx_status)
@@ -591,6 +595,7 @@ static irqreturn_t pdphy_msg_tx_irq(int irq, void *data)
 {
 	struct usb_pdphy *pdphy = data;
 
+	pm_wakeup_event(pdphy->dev, PD_ACTIVITY_TIMEOUT_MS);
 	/* TX already aborted by received signal */
 	if (pdphy->tx_status != -EINPROGRESS)
 		return IRQ_HANDLED;
@@ -618,6 +623,7 @@ static irqreturn_t pdphy_msg_rx_discarded_irq(int irq, void *data)
 {
 	struct usb_pdphy *pdphy = data;
 
+	pm_wakeup_event(pdphy->dev, PD_ACTIVITY_TIMEOUT_MS);
 	pdphy->msg_rx_discarded_cnt++;
 
 	return IRQ_HANDLED;
@@ -629,6 +635,7 @@ static irqreturn_t pdphy_sig_rx_irq_thread(int irq, void *data)
 	int ret;
 	struct usb_pdphy *pdphy = data;
 
+	pm_wakeup_event(pdphy->dev, PD_ACTIVITY_TIMEOUT_MS);
 	pdphy->sig_rx_cnt++;
 
 	ret = pdphy_reg_read(pdphy, &rx_status, USB_PDPHY_RX_STATUS, 1);
@@ -660,6 +667,7 @@ static irqreturn_t pdphy_sig_tx_irq_thread(int irq, void *data)
 {
 	struct usb_pdphy *pdphy = data;
 
+	pm_wakeup_event(pdphy->dev, PD_ACTIVITY_TIMEOUT_MS);
 	/* in case of exit from BIST Carrier Mode 2, clear BIST_MODE */
 	pdphy_reg_write(pdphy, USB_PDPHY_BIST_MODE, 0);
 
@@ -691,6 +699,7 @@ static irqreturn_t pdphy_msg_rx_irq(int irq, void *data)
 	int ret;
 	struct usb_pdphy *pdphy = data;
 
+	pm_wakeup_event(pdphy->dev, PD_ACTIVITY_TIMEOUT_MS);
 	pdphy->msg_rx_cnt++;
 
 	ret = pdphy_reg_read(pdphy, &size, USB_PDPHY_RX_SIZE, 1);
@@ -898,6 +907,32 @@ static void pdphy_shutdown(struct platform_device *pdev)
 		pdphy->shutdown_cb(pdphy->usbpd);
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int pdphy_pm_resume(struct device *dev)
+{
+	struct usb_pdphy *pdphy = dev_get_drvdata(dev);
+
+	if (pdphy->resume_cb)
+		pdphy->resume_cb(pdphy->usbpd);
+
+	return 0;
+}
+
+static int pdphy_pm_suspend(struct device *dev)
+{
+	struct usb_pdphy *pdphy = dev_get_drvdata(dev);
+
+	if (pdphy->suspend_cb)
+		pdphy->suspend_cb(pdphy->usbpd);
+
+	return 0;
+}
+
+static const struct dev_pm_ops pdphy_dev_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pdphy_pm_suspend, pdphy_pm_resume)
+};
+#endif
+
 static const struct of_device_id pdphy_match_table[] = {
 	{
 		.compatible	 = "qcom,qpnp-pdphy",
@@ -910,6 +945,9 @@ static struct platform_driver pdphy_driver = {
 	 .driver	 = {
 		 .name			= "qpnp-pdphy",
 		 .of_match_table	= pdphy_match_table,
+#ifdef CONFIG_PM_SLEEP
+		 .pm			= &pdphy_dev_pm_ops,
+#endif
 	 },
 	 .probe		= pdphy_probe,
 	 .remove	= pdphy_remove,

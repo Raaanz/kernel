@@ -66,17 +66,15 @@ int dsi_phy_timing_calc_init(struct dsi_phy_hw *phy,
  * @mode:       DSI mode information.
  * @host:       DSI host configuration.
  * @timing:     DSI phy lane configurations.
- * @use_mode_bit_clk: Boolean to indicate whether to recalculate bit clk.
  *
  * This function setups the catalog information in the dsi_phy_hw object.
  *
  * return: error code for failure and 0 for success.
  */
 int dsi_phy_hw_calculate_timing_params(struct dsi_phy_hw *phy,
-				       struct dsi_mode_info *mode,
-				       struct dsi_host_common_cfg *host,
-				       struct dsi_phy_per_lane_cfgs *timing,
-				       bool use_mode_bit_clk);
+					    struct dsi_mode_info *mode,
+	struct dsi_host_common_cfg *host,
+	struct dsi_phy_per_lane_cfgs *timing);
 
 /* Definitions for 14nm PHY hardware driver */
 void dsi_phy_hw_v2_0_regulator_enable(struct dsi_phy_hw *phy,
@@ -110,8 +108,7 @@ void dsi_phy_hw_v3_0_toggle_resync_fifo(struct dsi_phy_hw *phy);
 
 /* DSI controller common ops */
 u32 dsi_ctrl_hw_cmn_get_interrupt_status(struct dsi_ctrl_hw *ctrl);
-void dsi_ctrl_hw_cmn_debug_bus(struct dsi_ctrl_hw *ctrl, u32 *entries,
-			       u32 size);
+void dsi_ctrl_hw_cmn_debug_bus(struct dsi_ctrl_hw *ctrl);
 void dsi_ctrl_hw_cmn_clear_interrupt_status(struct dsi_ctrl_hw *ctrl, u32 ints);
 void dsi_ctrl_hw_cmn_enable_status_interrupts(struct dsi_ctrl_hw *ctrl,
 					     u32 ints);
@@ -178,10 +175,10 @@ void dsi_ctrl_hw_cmn_phy_reset_config(struct dsi_ctrl_hw *ctrl,
 void dsi_ctrl_hw_22_phy_reset_config(struct dsi_ctrl_hw *ctrl,
 			bool enable);
 u32 dsi_ctrl_hw_cmn_get_cmd_read_data(struct dsi_ctrl_hw *ctrl,
-				     u8 *rd_buf,
-				     u32 read_offset,
-				     u32 rx_byte,
-				     u32 pkt_size, u32 *hw_read_cnt);
+				      u8 *rd_buf,
+				      u32 read_offset,
+				      u32 rx_byte,
+				      u32 pkt_size, u32 *hw_read_cnt);
 void dsi_ctrl_hw_cmn_clear_rdbk_reg(struct dsi_ctrl_hw *ctrl);
 void dsi_ctrl_hw_22_schedule_dma_cmd(struct dsi_ctrl_hw *ctrl, int line_on);
 int dsi_ctrl_hw_cmn_ctrl_reset(struct dsi_ctrl_hw *ctrl,
@@ -226,16 +223,4 @@ void dsi_ctrl_hw_kickoff_non_embedded_mode(struct dsi_ctrl_hw *ctrl,
 /* Definitions specific to 2.2 DSI controller hardware */
 bool dsi_ctrl_hw_22_get_cont_splash_status(struct dsi_ctrl_hw *ctrl);
 
-void dsi_ctrl_hw_cmn_set_continuous_clk(struct dsi_ctrl_hw *ctrl, bool enable);
-
-/* dynamic refresh specific functions */
-void dsi_phy_hw_v3_0_dyn_refresh_helper(struct dsi_phy_hw *phy, u32 offset);
-void dsi_phy_hw_v3_0_dyn_refresh_config(struct dsi_phy_hw *phy,
-				struct dsi_phy_cfg *cfg, bool is_master);
-void dsi_phy_hw_v3_0_dyn_refresh_pipe_delay(struct dsi_phy_hw *phy,
-					    struct dsi_dyn_clk_delay *delay);
-
-int dsi_ctrl_hw_cmn_wait4dynamic_refresh_done(struct dsi_ctrl_hw *ctrl);
-int dsi_phy_hw_v3_0_cache_phy_timings(struct dsi_phy_per_lane_cfgs *timings,
-				      u32 *dst, u32 size);
 #endif /* _DSI_CATALOG_H_ */

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2018, 2020 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -90,7 +90,6 @@ struct clock_info {
 	u32 count;
 	bool has_scaling;
 	bool has_mem_retention;
-	bool disable_memcore_only;
 };
 
 struct clock_set {
@@ -190,7 +189,6 @@ struct msm_vidc_platform_resources {
 	struct msm_vidc_codec_data *codec_data;
 	int codec_data_count;
 	struct msm_vidc_csc_coeff *csc_coeff_data;
-	bool enable_max_resolution;
 };
 
 static inline bool is_iommu_present(struct msm_vidc_platform_resources *res)

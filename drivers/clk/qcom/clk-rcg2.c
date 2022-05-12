@@ -1,7 +1,5 @@
 /*
- * Copyright (c) 2013, 2016-2018, 2020,
- *
- * The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013, 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -131,7 +129,7 @@ static int update_config(struct clk_rcg2 *rcg)
 	}
 
 	WARN(1, "clk: %s: rcg didn't update its configuration.", name);
-	return -EBUSY;
+	return 0;
 }
 
 static int clk_rcg2_set_parent(struct clk_hw *hw, u8 index)
@@ -250,7 +248,6 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	const struct freq_tbl *f_curr;
 	u32 cfg, hid_div, m = 0, n = 0, mode = 0, mask;
-	unsigned long recalc_rate;
 
 	if (rcg->flags & DFS_ENABLE_RCG)
 		return rcg->current_freq;
@@ -288,16 +285,7 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 		hid_div &= mask;
 	}
 
-	recalc_rate = clk_rcg2_calc_rate(parent_rate, m, n, mode, hid_div);
-
-	/*
-	 * Check the case when the RCG has been initialized to a non-CXO
-	 * frequency.
-	 */
-	if (rcg->enable_safe_config && !rcg->current_freq)
-		rcg->current_freq = recalc_rate;
-
-	return recalc_rate;
+	return clk_rcg2_calc_rate(parent_rate, m, n, mode, hid_div);
 }
 
 static int _freq_tbl_determine_rate(struct clk_hw *hw,
@@ -318,13 +306,8 @@ static int _freq_tbl_determine_rate(struct clk_hw *hw,
 
 	clk_flags = clk_hw_get_flags(hw);
 	p = clk_hw_get_parent_by_index(hw, index);
-	if (!p)
-		return -EINVAL;
-
 	if (clk_flags & CLK_SET_RATE_PARENT) {
 		if (f->pre_div) {
-			if (!rate)
-				rate = req->rate;
 			rate /= 2;
 			rate *= f->pre_div + 1;
 		}
@@ -351,39 +334,6 @@ static int clk_rcg2_determine_rate(struct clk_hw *hw,
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 
 	return _freq_tbl_determine_rate(hw, rcg->freq_tbl, req);
-}
-
-static bool clk_rcg2_current_config(struct clk_rcg2 *rcg,
-				    const struct freq_tbl *f)
-{
-	struct clk_hw *hw = &rcg->clkr.hw;
-	u32 cfg, mask, new_cfg;
-	int index;
-
-	if (rcg->mnd_width) {
-		mask = BIT(rcg->mnd_width) - 1;
-		regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + M_REG, &cfg);
-		if ((cfg & mask) != (f->m & mask))
-			return false;
-
-		regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + N_REG, &cfg);
-		if ((cfg & mask) != (~(f->n - f->m) & mask))
-			return false;
-	}
-
-	mask = (BIT(rcg->hid_width) - 1) | CFG_SRC_SEL_MASK;
-
-	index = qcom_find_src_index(hw, rcg->parent_map, f->src);
-
-	new_cfg = ((f->pre_div << CFG_SRC_DIV_SHIFT) |
-		(rcg->parent_map[index].cfg << CFG_SRC_SEL_SHIFT)) & mask;
-
-	regmap_read(rcg->clkr.regmap, rcg->cmd_rcgr + CFG_REG, &cfg);
-
-	if (new_cfg != (cfg & mask))
-		return false;
-
-	return true;
 }
 
 static int clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
@@ -950,8 +900,6 @@ static int clk_byte2_set_rate(struct clk_hw *hw, unsigned long rate,
 	for (i = 0; i < num_parents; i++) {
 		if (cfg == rcg->parent_map[i].cfg) {
 			f.src = rcg->parent_map[i].src;
-			if (clk_rcg2_current_config(rcg, &f))
-				return 0;
 			return clk_rcg2_configure(rcg, &f);
 		}
 	}

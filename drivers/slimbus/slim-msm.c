@@ -182,12 +182,8 @@ static int msm_slim_iommu_attach(struct msm_slim_ctrl *ctrl_dev)
 	if (!ctrl_dev->iommu_desc.cb_dev)
 		return 0;
 
-	if (!IS_ERR_OR_NULL(ctrl_dev->iommu_desc.iommu_map)) {
-		arm_iommu_detach_device(ctrl_dev->iommu_desc.cb_dev);
-		arm_iommu_release_mapping(ctrl_dev->iommu_desc.iommu_map);
-		ctrl_dev->iommu_desc.iommu_map = NULL;
-		SLIM_INFO(ctrl_dev, "NGD IOMMU Dettach complete\n");
-	}
+	if (!IS_ERR_OR_NULL(ctrl_dev->iommu_desc.iommu_map))
+		return 0;
 
 	dev = ctrl_dev->iommu_desc.cb_dev;
 	iommu_map = arm_iommu_create_mapping(&platform_bus_type,
@@ -669,7 +665,7 @@ void msm_slim_tx_msg_return(struct msm_slim_ctrl *dev, int err)
 					(idx * (SLIM_MSGQ_BUF_LEN >> 2));
 			/* print the descriptor that resulted in error */
 			for (i = 0; i < (SLIM_MSGQ_BUF_LEN >> 2); i++)
-				SLIM_WARN(dev, "err desc[%d]:0x%x", i, addr[i]);
+				SLIM_DBG(dev, "err desc[%d]:0x%x", i, addr[i]);
 		}
 		/* reclaim all packets that were delivered out of order */
 		if (idx != dev->tx_head)
@@ -1304,6 +1300,12 @@ void msm_slim_sps_exit(struct msm_slim_ctrl *dev, bool dereg)
 			msm_slim_disconn_pipe_port(dev, i);
 	}
 
+	if (!IS_ERR_OR_NULL(dev->iommu_desc.iommu_map)) {
+		arm_iommu_detach_device(dev->iommu_desc.cb_dev);
+		arm_iommu_release_mapping(dev->iommu_desc.iommu_map);
+		dev->iommu_desc.iommu_map = NULL;
+	}
+
 	if (dereg) {
 		for (i = 0; i < dev->port_nums; i++) {
 			if (dev->pipes[i].connected)
@@ -1703,11 +1705,6 @@ int msm_slim_qmi_init(struct msm_slim_ctrl *dev, bool apps_is_master)
 	int rc = 0;
 	struct qmi_handle *handle;
 	struct slimbus_select_inst_req_msg_v01 req;
-
-	if (dev->qmi.handle || dev->qmi.task) {
-		pr_err("%s: Destroying stale QMI client handle\n", __func__);
-		msm_slim_qmi_exit(dev);
-	}
 
 	kthread_init_worker(&dev->qmi.kworker);
 	init_completion(&dev->qmi.defer_comp);

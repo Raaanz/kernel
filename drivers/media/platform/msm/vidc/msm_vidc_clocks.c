@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,16 +15,12 @@
 #include "vidc_hfi_api.h"
 #include "msm_vidc_debug.h"
 #include "msm_vidc_clocks.h"
-#include "./governors/fixedpoint.h"
 
 #define MSM_VIDC_MIN_UBWC_COMPLEXITY_FACTOR (1 << 16)
 #define MSM_VIDC_MAX_UBWC_COMPLEXITY_FACTOR (4 << 16)
 
 #define MSM_VIDC_MIN_UBWC_COMPRESSION_RATIO (1 << 16)
 #define MSM_VIDC_MAX_UBWC_COMPRESSION_RATIO (5 << 16)
-
-#define MAX_WIDTH_VALUE 7680
-#define MAX_HEIGHT_VALUE 3840
 
 static inline void msm_dcvs_print_dcvs_stats(struct clock_data *dcvs)
 {
@@ -42,7 +38,7 @@ static inline void msm_dcvs_print_dcvs_stats(struct clock_data *dcvs)
 static inline unsigned long int get_ubwc_compression_ratio(
 	struct ubwc_cr_stats_info_type ubwc_stats_info)
 {
-	fp_t sum = 0, weighted_sum = 0;
+	unsigned long int sum = 0, weighted_sum = 0;
 	unsigned long int compression_ratio = 1 << 16;
 
 	weighted_sum =
@@ -64,7 +60,7 @@ static inline unsigned long int get_ubwc_compression_ratio(
 		ubwc_stats_info.cr_stats_info6;
 
 	compression_ratio = (weighted_sum && sum) ?
-		fp_div((256 * sum), weighted_sum) : compression_ratio;
+		((256 * sum) << 16) / weighted_sum : compression_ratio;
 
 	return compression_ratio;
 }
@@ -118,9 +114,7 @@ static int fill_dynamic_stats(struct msm_vidc_inst *inst,
 {
 	struct recon_buf *binfo, *nextb;
 	struct vidc_input_cr_data *temp, *next;
-	u32 max_cr = MSM_VIDC_MIN_UBWC_COMPRESSION_RATIO;
-	u32 max_cf = MSM_VIDC_MIN_UBWC_COMPLEXITY_FACTOR;
-	u32 max_input_cr = MSM_VIDC_MIN_UBWC_COMPRESSION_RATIO;
+	u32 max_cr = 0, max_cf = 0, max_input_cr = 0;
 	u32 min_cr = MSM_VIDC_MAX_UBWC_COMPRESSION_RATIO;
 	u32 min_input_cr = MSM_VIDC_MAX_UBWC_COMPRESSION_RATIO;
 	u32 min_cf = MSM_VIDC_MAX_UBWC_COMPLEXITY_FACTOR;
@@ -167,7 +161,7 @@ static int fill_dynamic_stats(struct msm_vidc_inst *inst,
 	}
 
 	dprintk(VIDC_PROF,
-		"Input CR = %d Recon CR = %llu Complexity Factor = %llu\n",
+		"Input CR = %d Recon CR = %d Complexity Factor = %d\n",
 			vote_data->input_cr, vote_data->compression_ratio,
 			vote_data->complexity_factor);
 
@@ -190,17 +184,13 @@ int msm_comm_vote_bus(struct msm_vidc_core *core)
 	hdev = core->device;
 
 	mutex_lock(&core->lock);
-	list_for_each_entry(inst, &core->instances, list)
-		++vote_data_count;
-
-	vote_data = kcalloc(vote_data_count, sizeof(*vote_data),
-			GFP_TEMPORARY);
-	vote_data_count = 0;
+	vote_data = core->vote_data;
 	if (!vote_data) {
-		dprintk(VIDC_ERR, "%s: failed to allocate memory\n", __func__);
+		dprintk(VIDC_PROF,
+			"Failed to get vote_data for inst %pK\n",
+				inst);
 		mutex_unlock(&core->lock);
-		rc = -ENOMEM;
-		return rc;
+		return -EINVAL;
 	}
 
 	list_for_each_entry(inst, &core->instances, list) {
@@ -313,7 +303,6 @@ int msm_comm_vote_bus(struct msm_vidc_core *core)
 		rc = call_hfi_op(hdev, vote_bus, hdev->hfi_device_data,
 			vote_data, vote_data_count);
 
-	kfree(vote_data);
 	return rc;
 }
 
@@ -664,8 +653,8 @@ static unsigned long msm_vidc_calc_freq(struct msm_vidc_inst *inst,
 			vsp_factor_num = vsp_factor_num * 13 / 10;
 			vsp_factor_den *= 2;
 		}
-		vsp_cycles += div_u64((u64)inst->clk_data.bitrate *
-				vsp_factor_num, vsp_factor_den);
+		vsp_cycles += ((u64)inst->clk_data.bitrate * vsp_factor_num) /
+				vsp_factor_den;
 	} else if (inst->session_type == MSM_VIDC_DECODER) {
 		vpp_cycles = mbs_per_second * inst->clk_data.entry->vpp_cycles;
 
@@ -974,7 +963,7 @@ void msm_clock_data_reset(struct msm_vidc_inst *inst)
 
 	dprintk(VIDC_DBG, "Init DCVS Load\n");
 
-	if (!inst || !inst->core || !inst->clk_data.entry) {
+	if (!inst || !inst->core) {
 		dprintk(VIDC_ERR, "%s Invalid args: Inst = %pK\n",
 			__func__, inst);
 		return;
@@ -1293,20 +1282,6 @@ int msm_vidc_decide_core_and_power_mode(struct msm_vidc_inst *inst)
 	hier_mode |= msm_comm_g_ctrl_for_id(inst,
 		V4L2_CID_MPEG_VIDC_VIDEO_HYBRID_HIERP_MODE);
 
-	if (inst->session_type == MSM_VIDC_ENCODER &&
-		((inst->prop.width[CAPTURE_PORT] *
-		inst->prop.height[CAPTURE_PORT]) >=
-		(MAX_WIDTH_VALUE * MAX_HEIGHT_VALUE)) &&
-		(inst->capability.max_video_cores.max >= VIDC_CORE_ID_3)) {
-		if (current_inst_load / 2 + core0_load <= max_freq &&
-			current_inst_load / 2 + core1_load <= max_freq) {
-			if (inst->clk_data.work_mode == VIDC_WORK_MODE_2) {
-				inst->clk_data.core_id = VIDC_CORE_ID_3;
-				msm_vidc_power_save_mode_enable(inst, false);
-				goto decision_done;
-			}
-		}
-	}
 	/* Try for preferred core based on settings. */
 	if (inst->session_type == MSM_VIDC_ENCODER && hier_mode &&
 		inst->capability.max_video_cores.max >= VIDC_CORE_ID_3) {

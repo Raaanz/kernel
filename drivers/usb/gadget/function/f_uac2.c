@@ -1159,7 +1159,6 @@ afunc_bind(struct usb_configuration *cfg, struct usb_function *fn)
 	iad_desc.bFirstInterface = ret;
 
 	std_ac_if_desc.bInterfaceNumber = ret;
-	iad_desc.bFirstInterface = ret;
 	agdev->ac_intf = ret;
 	agdev->ac_alt = 0;
 
@@ -1189,14 +1188,14 @@ afunc_bind(struct usb_configuration *cfg, struct usb_function *fn)
 		agdev->out_ep = usb_ep_autoconfig(gadget, &fs_epout_desc);
 		if (!agdev->out_ep) {
 			dev_err(dev, "%s:%d Error!\n", __func__, __LINE__);
-			return -ENODEV;
+			return ret;
 		}
 	}
 
 	agdev->in_ep = usb_ep_autoconfig(gadget, &fs_epin_desc);
 	if (!agdev->in_ep) {
 		dev_err(dev, "%s:%d Error!\n", __func__, __LINE__);
-		return -ENODEV;
+		return ret;
 	}
 
 	uac2->p_prm.uac2 = uac2;

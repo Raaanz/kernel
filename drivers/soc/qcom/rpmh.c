@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,7 +32,7 @@
 #define RPMH_MAX_MBOXES			2
 #define RPMH_MAX_FAST_RES		32
 #define RPMH_MAX_REQ_IN_BATCH		10
-#define RPMH_TIMEOUT			msecs_to_jiffies(10000)
+#define RPMH_TIMEOUT			msecs_to_jiffies(20000)
 
 #define DEFINE_RPMH_MSG_ONSTACK(rc, s, q, c, name)	\
 	struct rpmh_msg name = {			\
@@ -258,28 +258,21 @@ existing:
 	switch (state) {
 	case RPMH_ACTIVE_ONLY_STATE:
 	case RPMH_AWAKE_STATE:
-		if (req->sleep_val != UINT_MAX) {
+		if (req->sleep_val != UINT_MAX)
 			req->wake_val = cmd->data;
-			rpm->dirty = true;
-		}
 		break;
 	case RPMH_WAKE_ONLY_STATE:
-		if (req->wake_val != cmd->data) {
-			req->wake_val = cmd->data;
-			rpm->dirty = true;
-		}
+		req->wake_val = cmd->data;
 		break;
 	case RPMH_SLEEP_STATE:
-		if (req->sleep_val != cmd->data) {
-			req->sleep_val = cmd->data;
-			rpm->dirty = true;
-		}
+		req->sleep_val = cmd->data;
 		break;
 	default:
 		break;
 	};
 
 unlock:
+	rpm->dirty = true;
 	spin_unlock_irqrestore(&rpm->lock, flags);
 
 	return req;
@@ -908,7 +901,6 @@ int send_single(struct rpmh_client *rc, enum rpmh_state state, u32 addr,
  */
 int rpmh_flush(struct rpmh_client *rc)
 {
-	DEFINE_RPMH_MSG_ONSTACK(rc, 0, NULL, NULL, rpm_msg);
 	struct rpmh_req *p;
 	struct rpmh_mbox *rpm = rc->rpmh;
 	int ret;
@@ -930,13 +922,6 @@ int rpmh_flush(struct rpmh_client *rc)
 		return 0;
 	}
 	spin_unlock_irqrestore(&rpm->lock, flags);
-
-	/* Invalidate sleep and wake TCS */
-	rpm_msg.msg.invalidate = true;
-	rpm_msg.msg.is_complete = false;
-	ret = mbox_write_controller_data(rc->chan, &rpm_msg.msg);
-	if (ret)
-		return ret;
 
 	/* First flush the cached passthru's */
 	ret = flush_passthru(rc);

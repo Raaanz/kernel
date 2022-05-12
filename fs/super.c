@@ -225,7 +225,11 @@ static struct super_block *alloc_super(struct file_system_type *type, int flags,
 	spin_lock_init(&s->s_inode_list_lock);
 	INIT_LIST_HEAD(&s->s_inodes_wb);
 	spin_lock_init(&s->s_inode_wblist_lock);
-
+#if IS_ENABLED(CONFIG_FS_VERITY)
+	/* TODO(mhalcrow): Not for upstream */
+	INIT_LIST_HEAD(&s->s_inodes_fsverity);
+	spin_lock_init(&s->s_inode_fsveritylist_lock);
+#endif
 	if (list_lru_init_memcg(&s->s_dentry_lru))
 		goto fail;
 	if (list_lru_init_memcg(&s->s_inode_lru))
@@ -410,6 +414,29 @@ bool trylock_super(struct super_block *sb)
 	return false;
 }
 
+/* TODO(mhalcrow): Not for upstream (fsverity list on the sb) */
+#if IS_ENABLED(CONFIG_FS_VERITY)
+static void fsverity_unmount_inodes(struct super_block *sb)
+{
+	struct inode *inode, *tmp;
+
+	/*
+	 * No need to take the spinlock; the filesystem is going away and can't
+	 * have any open files via which the list can be added to.  And iput()
+	 * can sleep, so it can't be called while holding a spinlock.
+	 */
+	list_for_each_entry_safe(inode, tmp, &sb->s_inodes_fsverity,
+				 i_fsverity_list) {
+		list_del_init(&inode->i_fsverity_list);
+		iput(inode);
+	}
+}
+#else
+static inline void fsverity_unmount_inodes(struct super_block *sb)
+{
+}
+#endif /* !CONFIG_FS_VERITY */
+
 /**
  *	generic_shutdown_super	-	common helper for ->kill_sb()
  *	@sb: superblock to kill
@@ -435,6 +462,7 @@ void generic_shutdown_super(struct super_block *sb)
 
 		fsnotify_unmount_inodes(sb);
 		cgroup_writeback_umount();
+		fsverity_unmount_inodes(sb);
 
 		evict_inodes(sb);
 
@@ -1272,11 +1300,36 @@ EXPORT_SYMBOL(__sb_end_write);
  */
 int __sb_start_write(struct super_block *sb, int level, bool wait)
 {
-	if (!wait)
-		return percpu_down_read_trylock(sb->s_writers.rw_sem + level-1);
+	bool force_trylock = false;
+	int ret = 1;
 
-	percpu_down_read(sb->s_writers.rw_sem + level-1);
-	return 1;
+#ifdef CONFIG_LOCKDEP
+	/*
+	 * We want lockdep to tell us about possible deadlocks with freezing
+	 * but it's it bit tricky to properly instrument it. Getting a freeze
+	 * protection works as getting a read lock but there are subtle
+	 * problems. XFS for example gets freeze protection on internal level
+	 * twice in some cases, which is OK only because we already hold a
+	 * freeze protection also on higher level. Due to these cases we have
+	 * to use wait == F (trylock mode) which must not fail.
+	 */
+	if (wait) {
+		int i;
+
+		for (i = 0; i < level - 1; i++)
+			if (percpu_rwsem_is_held(sb->s_writers.rw_sem + i)) {
+				force_trylock = true;
+				break;
+			}
+	}
+#endif
+	if (wait && !force_trylock)
+		percpu_down_read(sb->s_writers.rw_sem + level-1);
+	else
+		ret = percpu_down_read_trylock(sb->s_writers.rw_sem + level-1);
+
+	WARN_ON(force_trylock && !ret);
+	return ret;
 }
 EXPORT_SYMBOL(__sb_start_write);
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -96,30 +96,6 @@ static int cam_actuator_subdev_close(struct v4l2_subdev *sd,
 
 	return 0;
 }
-
-#ifdef CONFIG_USE_BU64748
-static int32_t cam_actuator_update_i2c_info(struct cam_actuator_ctrl_t *a_ctrl,
-	struct cam_actuator_i2c_info_t *i2c_info)
-{
-	struct cam_sensor_cci_client        *cci_client = NULL;
-
-	if (a_ctrl->io_master_info.master_type == CCI_MASTER) {
-		cci_client = a_ctrl->io_master_info.cci_client;
-		if (!cci_client) {
-			CAM_ERR(CAM_ACTUATOR, "failed: cci_client %pK",
-				cci_client);
-			return -EINVAL;
-		}
-		cci_client->cci_i2c_master = a_ctrl->cci_i2c_master;
-		cci_client->sid = (i2c_info->slave_addr) >> 1;
-		cci_client->retries = 3;
-		cci_client->id_map = 0;
-		cci_client->i2c_freq_mode = i2c_info->i2c_freq_mode;
-	}
-
-	return 0;
-}
-#endif
 
 static struct v4l2_subdev_core_ops cam_actuator_subdev_core_ops = {
 	.ioctl = cam_actuator_subdev_ioctl,
@@ -276,8 +252,6 @@ static int32_t cam_actuator_platform_remove(struct platform_device *pdev)
 	a_ctrl->io_master_info.cci_client = NULL;
 	kfree(power_info->power_setting);
 	kfree(power_info->power_down_setting);
-	power_info->power_setting = NULL;
-	power_info->power_down_setting = NULL;
 	kfree(a_ctrl->soc_info.soc_private);
 	kfree(a_ctrl->i2c_data.per_frame);
 	a_ctrl->i2c_data.per_frame = NULL;
@@ -310,8 +284,6 @@ static int32_t cam_actuator_driver_i2c_remove(struct i2c_client *client)
 	kfree(power_info->power_setting);
 	kfree(power_info->power_down_setting);
 	kfree(a_ctrl->soc_info.soc_private);
-	power_info->power_setting = NULL;
-	power_info->power_down_setting = NULL;
 	a_ctrl->soc_info.soc_private = NULL;
 	kfree(a_ctrl);
 	return rc;
@@ -321,6 +293,42 @@ static const struct of_device_id cam_actuator_driver_dt_match[] = {
 	{.compatible = "qcom,actuator"},
 	{}
 };
+
+static bool act_first_probed;
+static char act_ltc_str[80] = {0};
+
+bool check_act_ltc_disable(void)
+{
+	if (strncmp(act_ltc_str, "0", 1) == 0) {
+		CAM_INFO(CAM_ACTUATOR, "[LTC] LTC is disable");
+		return true;
+	} else {
+		CAM_INFO(CAM_ACTUATOR, "[LTC] LTC is enable");
+		return false;
+	}
+}
+
+static ssize_t act_ltc_show(struct device *dev,
+	struct device_attribute *attr,	char *buf)
+{
+	CAM_INFO(CAM_ACTUATOR, "[LTC] act_ltc_show: %s",
+		act_ltc_str);
+	return scnprintf(buf, PAGE_SIZE, "%s", act_ltc_str);
+}
+
+static ssize_t act_ltc_store(struct device *kobj,
+	struct device_attribute *attr,
+	const char *buf, size_t count)
+{
+	memset(act_ltc_str, 0, sizeof(act_ltc_str));
+	scnprintf(act_ltc_str,
+		sizeof(act_ltc_str), "%s", buf);
+	CAM_INFO(CAM_ACTUATOR, "[LTC] act_ltc_store: %s",
+		act_ltc_str);
+	return count;
+}
+
+static DEVICE_ATTR(act_ltc, 0644, act_ltc_show, act_ltc_store);
 
 static int32_t cam_actuator_driver_platform_probe(
 	struct platform_device *pdev)
@@ -339,7 +347,6 @@ static int32_t cam_actuator_driver_platform_probe(
 	/*fill in platform device*/
 	a_ctrl->v4l2_dev_str.pdev = pdev;
 	a_ctrl->soc_info.pdev = pdev;
-	a_ctrl->pdev = pdev;
 	a_ctrl->soc_info.dev = &pdev->dev;
 	a_ctrl->soc_info.dev_name = pdev->name;
 	a_ctrl->io_master_info.master_type = CCI_MASTER;
@@ -387,14 +394,6 @@ static int32_t cam_actuator_driver_platform_probe(
 	if (rc)
 		goto free_mem;
 
-#ifdef CONFIG_USE_BU64748
-	rc = cam_actuator_update_i2c_info(a_ctrl, &soc_private->i2c_info);
-	if (rc) {
-		CAM_ERR(CAM_ACTUATOR, "failed: to update i2c info rc %d", rc);
-		goto unreg_subdev;
-	}
-#endif
-
 	a_ctrl->bridge_intf.device_hdl = -1;
 	a_ctrl->bridge_intf.ops.get_dev_info =
 		cam_actuator_publish_dev_info;
@@ -409,12 +408,21 @@ static int32_t cam_actuator_driver_platform_probe(
 	v4l2_set_subdevdata(&a_ctrl->v4l2_dev_str.sd, a_ctrl);
 	a_ctrl->cam_act_state = CAM_ACTUATOR_INIT;
 
+	if (act_first_probed == false) {
+		act_first_probed = true;
+		memset(act_ltc_str, 0, sizeof(act_ltc_str));
+		CAM_INFO(CAM_SENSOR,"[LTC] pdev->name=%s",
+			pdev->name);
+		rc = sysfs_create_file(pdev->dev.kobj.parent,
+			&dev_attr_act_ltc.attr);
+		if (rc) {
+			CAM_ERR(CAM_SENSOR,
+				"[LTC] sysfs create fail");
+		}
+	}
+
 	return rc;
 
-#ifdef CONFIG_USE_BU64748
-unreg_subdev:
-	cam_unregister_subdev(&(a_ctrl->v4l2_dev_str));
-#endif
 free_mem:
 	kfree(a_ctrl->i2c_data.per_frame);
 free_soc:
@@ -434,7 +442,6 @@ static struct platform_driver cam_actuator_platform_driver = {
 		.name = "qcom,actuator",
 		.owner = THIS_MODULE,
 		.of_match_table = cam_actuator_driver_dt_match,
-		.suppress_bind_attrs = true,
 	},
 	.remove = cam_actuator_platform_remove,
 };

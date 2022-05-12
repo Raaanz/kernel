@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -59,13 +59,6 @@ enum ice_crypto_data_unit {
 	ICE_CRYPTO_DATA_UNIT_16_KB          = 5,
 	ICE_CRYPTO_DATA_UNIT_32_KB          = 6,
 	ICE_CRYPTO_DATA_UNIT_64_KB          = 7,
-};
-
-enum ice_capability_index {
-	ICE_CRYPTO_MODE_XTS_128 = 0,
-	ICE_CRYPTO_MODE_CBC_128 = 1,
-	ICE_CRYPTO_MODE_XTS_256 = 3,
-	ICE_CRYPTO_MODE_CBC_256 = 4
 };
 
 typedef void (*ice_error_cb)(void *, u32 error);

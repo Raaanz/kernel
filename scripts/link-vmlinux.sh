@@ -62,30 +62,29 @@ archive_builtin()
 	fi
 }
 
-# If CONFIG_LTO_CLANG is selected, generate a linker script to ensure correct
-# ordering of initcalls, and with CONFIG_MODVERSIONS also enabled, collect the
-# previously generated symbol versions into the same script.
-lto_lds()
+# If CONFIG_LTO_CLANG is selected, collect generated symbol versions into
+# .tmp_symversions
+modversions()
 {
 	if [ -z "${CONFIG_LTO_CLANG}" ]; then
 		return
 	fi
 
-	${srctree}/scripts/generate_initcall_order.pl \
-		built-in.o ${KBUILD_VMLINUX_LIBS} \
-		> .tmp_lto.lds
-
-	if [ -n "${CONFIG_MODVERSIONS}" ]; then
-		for a in built-in.o ${KBUILD_VMLINUX_LIBS}; do
-			for o in $(${AR} t $a); do
-				if [ -f ${o}.symversions ]; then
-					cat ${o}.symversions >> .tmp_lto.lds
-				fi
-			done
-		done
+	if [ -z "${CONFIG_MODVERSIONS}" ]; then
+		return
 	fi
 
-	echo "-T .tmp_lto.lds"
+	rm -f .tmp_symversions
+
+	for a in built-in.o ${KBUILD_VMLINUX_LIBS}; do
+		for o in $(${AR} t $a); do
+			if [ -f ${o}.symversions ]; then
+				cat ${o}.symversions >> .tmp_symversions
+			fi
+		done
+	done
+
+	echo "-T .tmp_symversions"
 }
 
 # Link of vmlinux.o used for section mismatch analysis
@@ -111,7 +110,7 @@ modpost_link()
 		info LD vmlinux.o
 	fi
 
-	${LD} ${KBUILD_LDFLAGS} -r -o ${1} $(lto_lds) ${objects}
+	${LD} ${LDFLAGS} -r -o ${1} $(modversions) ${objects}
 }
 
 # If CONFIG_LTO_CLANG is selected, we postpone running recordmcount until
@@ -137,7 +136,7 @@ vmlinux_link()
 
 	if [ "${SRCARCH}" != "um" ]; then
 		local ld=${LD}
-		local ldflags="${KBUILD_LDFLAGS} ${LDFLAGS_vmlinux}"
+		local ldflags="${LDFLAGS} ${LDFLAGS_vmlinux}"
 
 		if [ -n "${LDFINAL_vmlinux}" ]; then
 			ld=${LDFINAL_vmlinux}
@@ -214,20 +213,14 @@ rtic_mp()
 	# assume that RTIC_MP_O generation may fail
 	RTIC_MP_O=
 
-	local aflags="${KBUILD_AFLAGS} ${KBUILD_AFLAGS_KERNEL}               \
-			${NOSTDINC_FLAGS} ${LINUXINCLUDE} ${KBUILD_CPPFLAGS}"
-
 	${RTIC_MPGEN} --objcopy="${OBJCOPY}" --objdump="${OBJDUMP}" \
 	--binpath='' --vmlinux=${1} --config=${KCONFIG_CONFIG} && \
-	cat rtic_mp.c | ${CC} ${aflags} -c -o ${2} -x c - && \
+	cat rtic_mp.c | ${CC} -c -o ${2} -x c - && \
 	cp rtic_mp.c ${4} && \
 	${NM} --print-size --size-sort ${2} > ${3} && \
-	RTIC_MP_O=${2} || echo “RTIC MP generation has failed”
+	RTIC_MP_O=${2}
 	# NM - save generated variable sizes for verification
 	# RTIC_MP_O is our retval - great success if set to generated .o file
-	# Echo statement above prints the error message in case any of the
-	# above RTIC MP generation commands fail and it ensures rtic mp failure
-	# does not cause kernel compilation to fail.
 }
 
 # Create map file with all symbols from ${1}
@@ -249,7 +242,7 @@ cleanup()
 	rm -f .tmp_System.map
 	rm -f .tmp_kallsyms*
 	rm -f .tmp_version
-	rm -f .tmp_lto.lds
+	rm -f .tmp_symversions
 	rm -f .tmp_vmlinux*
 	rm -f built-in.o
 	rm -f System.map
@@ -385,11 +378,7 @@ fi
 # Update RTIC MP object by replacing the place holder
 # with actual MP data of the same size
 # Also double check that object size did not change
-# Note: Check initilally if RTIC_MP_O is not empty or uninitialized,
-# as incase RTIC_MPGEN is set and failure occurs in RTIC_MP_O
-# generation, below check for comparing object sizes fails
-# due to an empty RTIC_MP_O object.
-if [ ! -z ${RTIC_MP_O} ]; then
+if [ ! -z ${RTIC_MPGEN+x} ]; then
 	rtic_mp "${kallsyms_vmlinux}" rtic_mp.o .tmp_rtic_mp_sz2 \
                 .tmp_rtic_mp2.c
 	if ! cmp -s .tmp_rtic_mp_sz1 .tmp_rtic_mp_sz2; then

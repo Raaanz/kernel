@@ -2012,7 +2012,8 @@ static int spcom_handle_write(struct spcom_channel *ch,
 
 	if (!ch && cmd_id != SPCOM_CMD_CREATE_CHANNEL) {
 		pr_err("channel context is null\n");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit_err;
 	}
 
 	switch (cmd_id) {
@@ -2036,6 +2037,7 @@ static int spcom_handle_write(struct spcom_channel *ch,
 		ret = -EINVAL;
 	}
 
+exit_err:
 	mutex_unlock(&spcom_dev->cmd_lock);
 
 	return ret;
@@ -2634,7 +2636,7 @@ exit_destroy_device:
 	return -EFAULT;
 }
 
-static int spcom_register_chardev(void)
+static int __init spcom_register_chardev(void)
 {
 	int ret;
 	unsigned int baseminor = 0;
@@ -2764,7 +2766,7 @@ static int spcom_probe(struct platform_device *pdev)
 	ret = spcom_register_chardev();
 	if (ret) {
 		pr_err("create character device failed.\n");
-		goto fail_while_chardev_reg;
+		goto fail_reg_chardev;
 	}
 
 	link_info.glink_link_state_notif_cb = spcom_link_state_notif_cb;
@@ -2802,7 +2804,6 @@ fail_ion_client:
 fail_reg_chardev:
 	pr_err("Failed to init driver.\n");
 	spcom_unregister_chrdev();
-fail_while_chardev_reg:
 	kfree(dev);
 	spcom_dev = NULL;
 
